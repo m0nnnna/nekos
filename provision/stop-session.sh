@@ -5,6 +5,9 @@
 # ever changes. Invoked by nekos-bar's "Shutdown" app-menu entry.
 set -eu
 
+# Must die first: otherwise it notices the components below going down and
+# respawns them mid-shutdown.
+pkill -f "provision/supervisor.sh" 2>/dev/null || true
 pkill -f "nekos-notify --daemon" 2>/dev/null || true
 pkill -f "nekos-update-check" 2>/dev/null || true
 pkill -f nekos-bar 2>/dev/null || true

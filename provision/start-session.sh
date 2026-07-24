@@ -19,6 +19,7 @@ NOTIFY_BIN="$(dirname "$0")/../notify/nekos-notify"
 SOFTWARE_BIN="$(dirname "$0")/../software/nekos-software"
 PET_BIN="$(dirname "$0")/../pet/nekos-pet"
 
+pkill -f "provision/supervisor.sh" 2>/dev/null || true
 pkill -f "Xephyr.*${DISPLAY_NUM}" 2>/dev/null || true
 # Legacy servers, in case an old session predates the Xephyr switch.
 pkill -f "Xvnc ${DISPLAY_NUM}" 2>/dev/null || true
@@ -225,6 +226,12 @@ if [ -x "${SOFTWARE_BIN}" ]; then
             sleep 1800
         done" >/tmp/nekos-update-check.log 2>&1 < /dev/null &
 fi
+
+# Supervisor: watches wm/bar/desktop/notify/pet and restarts any that die
+# mid-session (see supervisor.sh -- a WM crash also takes its restart of the
+# rest of the shell with it). Launched last, once everything above is already
+# up, so it never mistakes still-starting components for dead ones.
+setsid sh "$(dirname "$0")/supervisor.sh" "${DISPLAY_NUM}" >/tmp/nekos-supervisor.log 2>&1 < /dev/null &
 
 echo "start-session.sh: Xephyr ${DEFAULT_W}x${DEFAULT_H} on ${DISPLAY_NUM}," \
      "nested under WSLg (${HOST_DISPLAY}) -- window should appear on the" \
