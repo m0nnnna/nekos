@@ -43,7 +43,7 @@ jobs:
             set -eu
             xbps-install -Suy xbps
             xbps-install -Suy
-            xbps-install -Sy git
+            xbps-install -Sy base-system git
 
             echo "==> NekoShot"
             git clone --depth 1 https://github.com/m0nnnna/NekoShot.git /root/nekoshot
