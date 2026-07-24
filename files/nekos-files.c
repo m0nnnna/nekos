@@ -23,8 +23,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
+#include <grp.h>
 #include <limits.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -32,6 +34,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -56,6 +59,7 @@
 #define UP_SIZE      26
 #define PATH_X       (UP_X + UP_SIZE + 10)
 #define MAX_SEGS     64
+#define FILTER_CHIP_W 130 /* reserved header space for the type-to-filter chip, when active */
 #define SCROLL_STEP  3
 #define DOUBLE_CLICK_MS 400
 #define MAX_ENTRIES  2048
@@ -97,6 +101,22 @@ static int win_h = INIT_HEIGHT;
 static int hover_row = -1;
 static int hover_up = 0;
 static int hover_seg = -1;
+static int hover_filter_chip = 0;
+
+/* Type-to-filter (mirrors nekos-launch's search-as-you-type UX): typed
+ * characters live-filter the current directory's listing by substring match
+ * on name, case-insensitive. display_idx/display_count is the filtered view
+ * over entries[] that painting and hit-testing use -- ".." always stays
+ * visible so you can navigate up while filtering. Cleared on real navigation
+ * (entering/leaving a directory), but preserved across a same-directory
+ * reload (e.g. after a rename or the hidden-files toggle). */
+static char filter_text[NAME_LEN] = "";
+static int display_idx[MAX_ENTRIES];
+static int display_count = 0;
+static double filter_chip_x0, filter_chip_x1;
+
+/* Dotfiles are hidden by default; toggled from the empty-area context menu. */
+static int show_hidden = 0;
 
 /* Clickable path segments, rebuilt on every paint: seg_x[i]..seg_x2[i] is
  * segment i's on-screen span, seg_len[i] the cur_dir prefix length it
@@ -197,6 +217,17 @@ static void notify_error(const char *title, const char *body) {
     }
 }
 
+/* Case-insensitive substring test, used by the type-to-filter box. Avoids
+ * relying on strcasestr (a GNU/BSD extension, not guaranteed portable). */
+static int istr_contains(const char *haystack, const char *needle) {
+    if (!*needle) return 1;
+    size_t hn = strlen(needle);
+    for (const char *p = haystack; *p; p++) {
+        if (strncasecmp(p, needle, hn) == 0) return 1;
+    }
+    return 0;
+}
+
 static int ext_matches(const char *name, const char *const *exts) {
     const char *dot = strrchr(name, '.');
     if (!dot) return 0;
@@ -243,6 +274,19 @@ static void free_thumbs(void) {
     }
 }
 
+/* Rebuilds display_idx from entries[] + filter_text. Called whenever either
+ * changes (a fresh load_dir, or a filter keystroke without reloading). */
+static void rebuild_display(void) {
+    display_count = 0;
+    for (int i = 0; i < entry_count; i++) {
+        if (filter_text[0] && strcmp(entries[i].name, "..") != 0 &&
+            !istr_contains(entries[i].name, filter_text)) {
+            continue;
+        }
+        display_idx[display_count++] = i;
+    }
+}
+
 static void load_dir(const char *path) {
     char resolved[PATH_LEN];
     if (!realpath(path, resolved)) return;
@@ -257,7 +301,8 @@ static void load_dir(const char *path) {
     if (d) {
         struct dirent *e;
         while (entry_count < MAX_ENTRIES && (e = readdir(d))) {
-            if (e->d_name[0] == '.') continue; /* skips ".", "..", and hidden */
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue; /* "..": synthesized below */
+            if (e->d_name[0] == '.' && !show_hidden) continue;
 
             entry_t *en = &entries[entry_count];
             strncpy(en->name, e->d_name, NAME_LEN - 1);
@@ -297,6 +342,7 @@ static void load_dir(const char *path) {
         entries[0].thumb_tried = 0;
     }
 
+    rebuild_display();
     scroll_off = 0;
     sel_index = -1;
     hover_row = -1;
@@ -324,6 +370,7 @@ static void activate(int idx) {
     }
 
     if (en->is_dir) {
+        filter_text[0] = '\0'; /* real navigation -- don't carry a filter into the new directory */
         load_dir(target);
     } else {
         open_path(target);
@@ -882,6 +929,359 @@ static void action_ctx_restore(void *ud) {
     paint();
 }
 
+static void action_ctx_toggle_hidden(void *ud) {
+    (void)ud;
+    show_hidden = !show_hidden;
+    load_dir(cur_dir); /* same directory -- filter_text is preserved */
+    paint();
+}
+
+static int has_suffix_ci(const char *name, const char *suffix) {
+    size_t nlen = strlen(name), slen = strlen(suffix);
+    if (nlen < slen) return 0;
+    return strcasecmp(name + nlen - slen, suffix) == 0;
+}
+
+static int is_archive(const char *name) {
+    return has_suffix_ci(name, ".zip") || has_suffix_ci(name, ".tar") ||
+           has_suffix_ci(name, ".tar.gz") || has_suffix_ci(name, ".tgz") ||
+           has_suffix_ci(name, ".tar.bz2") || has_suffix_ci(name, ".tar.xz");
+}
+
+/* Strips a recognized archive suffix, for naming the folder extraction lands
+ * in (e.g. "photos.tar.gz" -> "photos"). Falls back to the full name if
+ * nothing matches (shouldn't happen -- callers only reach this via
+ * is_archive()). */
+static void archive_base_name(const char *name, char *out, size_t out_size) {
+    static const char *const suffixes[] = {
+        ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tar", ".zip", NULL };
+    for (int i = 0; suffixes[i]; i++) {
+        if (has_suffix_ci(name, suffixes[i])) {
+            size_t keep = strlen(name) - strlen(suffixes[i]);
+            if (keep >= out_size) keep = out_size - 1;
+            memcpy(out, name, keep);
+            out[keep] = '\0';
+            return;
+        }
+    }
+    snprintf(out, out_size, "%s", name);
+}
+
+/* Compresses a file or directory into a sibling .tar.gz. Runs tar
+ * synchronously (fork + waitpid) rather than firing-and-forgetting, matching
+ * the existing copy/paste convention of blocking the UI for the duration of
+ * a disk operation, then reloading. No shell involved -- execlp with a fixed
+ * argv, so there's nothing here for a crafted filename to inject into. */
+static void action_ctx_compress(void *ud) {
+    (void)ud;
+    int idx = ctx_target_idx;
+    if (idx < 0 || idx >= entry_count || strcmp(entries[idx].name, "..") == 0) return;
+
+    char base_name[NAME_LEN + 8];
+    snprintf(base_name, sizeof(base_name), "%s.tar.gz", entries[idx].name);
+    char archive_name[NAME_LEN + 16];
+    unique_name_in(cur_dir, base_name, archive_name, sizeof(archive_name));
+    char archive_path[PATH_LEN + NAME_LEN + 2];
+    snprintf(archive_path, sizeof(archive_path), "%s/%s", cur_dir, archive_name);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* -C cur_dir + a bare member name -> archive contents are relative
+         * paths, so re-extracting elsewhere doesn't reproduce cur_dir's
+         * absolute layout. */
+        execlp("tar", "tar", "-czf", archive_path, "-C", cur_dir, entries[idx].name, (char *)NULL);
+        _exit(127);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+            notify_error("Compress failed", "tar exited with an error");
+            unlink(archive_path); /* don't leave a partial archive behind */
+        }
+    }
+    load_dir(cur_dir);
+    paint();
+}
+
+/* Extracts a .zip/.tar(.gz|.bz2|.xz) into cur_dir. zip goes through `unzip`
+ * (tar doesn't read zip), everything else through `tar -xf` (format
+ * auto-detected from the extension/magic).
+ *
+ * Extracts into a private /tmp scratch dir first, then places the result
+ * based on what actually came out of the archive: a single top-level
+ * entry (by far the common case -- an archive of one folder or file) lands
+ * directly in cur_dir under its own name, uniquified on collision; multiple
+ * top-level entries get gathered into one new folder named after the
+ * archive instead, so a loose-files archive doesn't scatter across cur_dir.
+ * Extracting straight into a folder named after the archive unconditionally
+ * (the simpler approach) double-nests the common case: an archive already
+ * wrapping its contents in "Desktop/" would land inside another new
+ * "Desktop/" this function created, producing Desktop/Desktop/... */
+static void action_ctx_extract(void *ud) {
+    (void)ud;
+    int idx = ctx_target_idx;
+    if (idx < 0 || idx >= entry_count || entries[idx].is_dir || !is_archive(entries[idx].name)) return;
+
+    char archive_path[PATH_LEN + NAME_LEN + 2];
+    snprintf(archive_path, sizeof(archive_path), "%s/%s", cur_dir, entries[idx].name);
+
+    char tmp_dir[64] = "/tmp/nekos-extract-XXXXXX";
+    if (!mkdtemp(tmp_dir)) {
+        notify_error("Extract failed", strerror(errno));
+        return;
+    }
+
+    int is_zip = has_suffix_ci(entries[idx].name, ".zip");
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (is_zip) {
+            execlp("unzip", "unzip", "-q", archive_path, "-d", tmp_dir, (char *)NULL);
+        } else {
+            execlp("tar", "tar", "-xf", archive_path, "-C", tmp_dir, (char *)NULL);
+        }
+        _exit(127);
+    }
+    int status = 0;
+    if (pid > 0) waitpid(pid, &status, 0);
+    if (pid < 0 || !(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+        notify_error("Extract failed", is_zip ? "unzip isn't installed or the archive is bad"
+                                                : "tar exited with an error");
+        remove_recursive(tmp_dir);
+        return;
+    }
+
+    char first_child[NAME_LEN] = "";
+    int child_count = 0;
+    DIR *d = opendir(tmp_dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            child_count++;
+            if (child_count == 1) snprintf(first_child, sizeof(first_child), "%s", e->d_name);
+        }
+        closedir(d);
+    }
+
+    int failed = 0;
+    if (child_count == 1) {
+        char src[PATH_LEN + NAME_LEN + 2];
+        snprintf(src, sizeof(src), "%s/%s", tmp_dir, first_child);
+        char dest_name[NAME_LEN + 16];
+        unique_name_in(cur_dir, first_child, dest_name, sizeof(dest_name));
+        char dest[PATH_LEN + NAME_LEN + 2];
+        snprintf(dest, sizeof(dest), "%s/%s", cur_dir, dest_name);
+        if (copy_recursive(src, dest) != 0) failed = 1;
+    } else {
+        char base[NAME_LEN];
+        archive_base_name(entries[idx].name, base, sizeof(base));
+        char dest_name[NAME_LEN + 16];
+        unique_name_in(cur_dir, base, dest_name, sizeof(dest_name));
+        char dest[PATH_LEN + NAME_LEN + 2];
+        snprintf(dest, sizeof(dest), "%s/%s", cur_dir, dest_name);
+        if (mkdir(dest, 0755) != 0) {
+            failed = 1;
+        } else {
+            DIR *d2 = opendir(tmp_dir);
+            if (d2) {
+                struct dirent *e;
+                while ((e = readdir(d2))) {
+                    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+                    char csrc[PATH_LEN + NAME_LEN + 2], cdst[PATH_LEN + NAME_LEN + 2];
+                    snprintf(csrc, sizeof(csrc), "%s/%s", tmp_dir, e->d_name);
+                    snprintf(cdst, sizeof(cdst), "%s/%s", dest, e->d_name);
+                    if (copy_recursive(csrc, cdst) != 0) failed = 1;
+                }
+                closedir(d2);
+            }
+        }
+    }
+
+    remove_recursive(tmp_dir);
+    if (failed) notify_error("Extract failed", "Some items couldn't be extracted");
+
+    load_dir(cur_dir);
+    paint();
+}
+
+/* ---- properties panel ---------------------------------------------------- */
+
+#define PROPS_W 380
+#define PROPS_ROW_H 22
+#define PROPS_PAD THEME_PAD
+
+static void format_size(off_t size, char *out, size_t out_size) {
+    static const char *const units[] = { "B", "KB", "MB", "GB", "TB" };
+    double s = (double)size;
+    int u = 0;
+    while (s >= 1024.0 && u < 4) { s /= 1024.0; u++; }
+    if (u == 0) snprintf(out, out_size, "%lld bytes", (long long)size);
+    else snprintf(out, out_size, "%.1f %s (%lld bytes)", s, units[u], (long long)size);
+}
+
+/* ls -l style "drwxr-xr-x" plus a trailing octal (e.g. "755"), the two
+ * notations most people reach for when they actually need permissions.
+ * `out` must have room for at least 16 bytes. */
+static void format_perms(mode_t mode, char *out, size_t out_size) {
+    char rwx[11];
+    rwx[0] = S_ISDIR(mode) ? 'd' : S_ISLNK(mode) ? 'l' : '-';
+    rwx[1] = (mode & S_IRUSR) ? 'r' : '-';
+    rwx[2] = (mode & S_IWUSR) ? 'w' : '-';
+    rwx[3] = (mode & S_IXUSR) ? 'x' : '-';
+    rwx[4] = (mode & S_IRGRP) ? 'r' : '-';
+    rwx[5] = (mode & S_IWGRP) ? 'w' : '-';
+    rwx[6] = (mode & S_IXGRP) ? 'x' : '-';
+    rwx[7] = (mode & S_IROTH) ? 'r' : '-';
+    rwx[8] = (mode & S_IWOTH) ? 'w' : '-';
+    rwx[9] = (mode & S_IXOTH) ? 'x' : '-';
+    rwx[10] = '\0';
+    snprintf(out, out_size, "%s %03o", rwx, (unsigned)(mode & 0777));
+}
+
+static void paint_properties(xcb_window_t pwin, const char *name, const struct stat *st) {
+    char lines_label[8][24];
+    char lines_value[8][300];
+    int n = 0;
+
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Name"); {
+        snprintf(lines_value[n], sizeof(lines_value[n]), "%s", name); n++;
+    }
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Type");
+    snprintf(lines_value[n], sizeof(lines_value[n]), "%s",
+             S_ISDIR(st->st_mode) ? "Folder" : S_ISLNK(st->st_mode) ? "Symlink" : "File");
+    n++;
+
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Size");
+    if (S_ISDIR(st->st_mode)) snprintf(lines_value[n], sizeof(lines_value[n]), "(folder)");
+    else format_size(st->st_size, lines_value[n], sizeof(lines_value[n]));
+    n++;
+
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Permissions");
+    format_perms(st->st_mode, lines_value[n], sizeof(lines_value[n]));
+    n++;
+
+    struct passwd *pw = getpwuid(st->st_uid);
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Owner");
+    if (pw) snprintf(lines_value[n], sizeof(lines_value[n]), "%s", pw->pw_name);
+    else snprintf(lines_value[n], sizeof(lines_value[n]), "%u", (unsigned)st->st_uid);
+    n++;
+
+    struct group *gr = getgrgid(st->st_gid);
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Group");
+    if (gr) snprintf(lines_value[n], sizeof(lines_value[n]), "%s", gr->gr_name);
+    else snprintf(lines_value[n], sizeof(lines_value[n]), "%u", (unsigned)st->st_gid);
+    n++;
+
+    snprintf(lines_label[n], sizeof(lines_label[n]), "Modified");
+    {
+        struct tm tmv;
+        localtime_r(&st->st_mtime, &tmv);
+        strftime(lines_value[n], sizeof(lines_value[n]), "%Y-%m-%d %H:%M:%S", &tmv);
+    }
+    n++;
+
+    int h = PROPS_PAD * 2 + 30 + n * PROPS_ROW_H + PROPS_PAD;
+    cairo_surface_t *surface = cairo_xcb_surface_create(conn, pwin, visual, PROPS_W, h);
+    cairo_t *cr = cairo_create(surface);
+
+    theme_panel_gradient(cr, 0, 0, PROPS_W, h, 1);
+
+    theme_font(cr, THEME_FONT_LG, 1);
+    theme_rgb(cr, THEME_FG);
+    cairo_move_to(cr, PROPS_PAD, PROPS_PAD + 18);
+    cairo_show_text(cr, "Properties");
+
+    theme_rgba(cr, THEME_ACCENT, THEME_BORDER_ALPHA);
+    cairo_rectangle(cr, 0, PROPS_PAD * 2 + 20, PROPS_W, 1);
+    cairo_fill(cr);
+
+    theme_font(cr, THEME_FONT_SM, 0);
+    for (int i = 0; i < n; i++) {
+        double y = PROPS_PAD * 2 + 20 + 16 + i * PROPS_ROW_H;
+        theme_rgba(cr, THEME_FG, 0.6);
+        cairo_move_to(cr, PROPS_PAD, y);
+        cairo_show_text(cr, lines_label[i]);
+        theme_rgb(cr, THEME_FG);
+        theme_text_ellipsized(cr, PROPS_PAD + 110, y, PROPS_W - PROPS_PAD - 110 - PROPS_PAD, lines_value[i]);
+    }
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+    xcb_flush(conn);
+}
+
+/* Read-only info panel, same override-redirect/grab/settle-repaint lifecycle
+ * as prompt_text but dismissed by anything -- a keypress, a click anywhere,
+ * or Escape -- since there's nothing to type. */
+static void show_properties(int idx) {
+    if (idx < 0 || idx >= entry_count) return;
+
+    char path[PATH_LEN + NAME_LEN + 2];
+    if (strcmp(entries[idx].name, "..") == 0) snprintf(path, sizeof(path), "%s/..", cur_dir);
+    else snprintf(path, sizeof(path), "%s/%s", cur_dir, entries[idx].name);
+
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        notify_error("Properties", "Couldn't read that item");
+        return;
+    }
+
+    int h = PROPS_PAD * 2 + 30 + 7 * PROPS_ROW_H + PROPS_PAD;
+    int16_t x = (int16_t)((screen->width_in_pixels - PROPS_W) / 2);
+    int16_t y = (int16_t)((screen->height_in_pixels - h) / 3);
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    xcb_window_t pwin = xcb_generate_id(conn);
+    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
+    uint32_t values[3] = { screen->black_pixel, 1, XCB_EVENT_MASK_EXPOSURE };
+    xcb_create_window(conn, XCB_COPY_FROM_PARENT, pwin, screen->root,
+                       x, y, PROPS_W, h, 0,
+                       XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
+    xcb_map_window(conn, pwin);
+    xcb_flush(conn);
+
+    xcb_grab_keyboard_reply_t *kr = xcb_grab_keyboard_reply(conn,
+        xcb_grab_keyboard(conn, 1, screen->root, XCB_CURRENT_TIME,
+                           XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC), NULL);
+    free(kr);
+    xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(conn,
+        xcb_grab_pointer(conn, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS,
+                          XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
+                          XCB_NONE, XCB_NONE, XCB_CURRENT_TIME), NULL);
+    free(gr);
+
+    paint_properties(pwin, entries[idx].name, &st);
+    xcb_flush(conn);
+
+    int xfd = xcb_get_file_descriptor(conn);
+    int settled = 0, done = 0;
+    while (!done) {
+        struct pollfd pfd = { .fd = xfd, .events = POLLIN, .revents = 0 };
+        poll(&pfd, 1, settled ? -1 : 40);
+        if (!settled) { paint_properties(pwin, entries[idx].name, &st); settled = 1; }
+
+        xcb_generic_event_t *event;
+        while ((event = xcb_poll_for_event(conn))) {
+            uint8_t rt = event->response_type & ~0x80;
+            if (rt == XCB_EXPOSE) paint_properties(pwin, entries[idx].name, &st);
+            else if (rt == XCB_KEY_PRESS || rt == XCB_BUTTON_PRESS) done = 1;
+            free(event);
+        }
+        if (xcb_connection_has_error(conn)) break;
+    }
+
+    xcb_ungrab_keyboard(conn, XCB_CURRENT_TIME);
+    xcb_ungrab_pointer(conn, XCB_CURRENT_TIME);
+    xcb_destroy_window(conn, pwin);
+    xcb_flush(conn);
+}
+
+static void action_ctx_properties(void *ud) {
+    (void)ud;
+    show_properties(ctx_target_idx);
+}
+
 /* Right-click: an entry row gets Open/Copy/Cut/Rename/New Folder/Delete;
  * empty space (or the ".." row, not a real target) gets New Folder, Paste
  * (only when the clipboard actually has something), and Open Trash. Inside
@@ -894,7 +1294,8 @@ static void handle_context_menu(xcb_button_press_event_t *ev) {
     ctx_menu_x = ev->root_x;
     ctx_menu_y = ev->root_y;
 
-    int idx = scroll_off + (ev->event_y - HEADER_H) / ROW_H;
+    int row_pos = scroll_off + (ev->event_y - HEADER_H) / ROW_H;
+    int idx = (row_pos >= 0 && row_pos < display_count) ? display_idx[row_pos] : -1;
     int trash_mode = in_trash();
 
     if (idx < 0 || idx >= entry_count || strcmp(entries[idx].name, "..") == 0) {
@@ -905,10 +1306,12 @@ static void handle_context_menu(xcb_button_press_event_t *ev) {
             menu_show(conn, screen, visual, ctx_menu_x, ctx_menu_y,
                       trash_empty_menu, (int)(sizeof(trash_empty_menu) / sizeof(trash_empty_menu[0])));
         } else {
-            menu_item_t empty_menu[3];
+            menu_item_t empty_menu[4];
             int n = 0;
             empty_menu[n++] = (menu_item_t){ "New Folder", action_ctx_new_folder, NULL };
             if (clip_has_item) empty_menu[n++] = (menu_item_t){ "Paste", action_ctx_paste, NULL };
+            empty_menu[n++] = (menu_item_t){ show_hidden ? "Hide Hidden Files" : "Show Hidden Files",
+                                              action_ctx_toggle_hidden, NULL };
             empty_menu[n++] = (menu_item_t){ "Open Trash", action_open_trash, NULL };
             menu_show(conn, screen, visual, ctx_menu_x, ctx_menu_y, empty_menu, n);
         }
@@ -927,16 +1330,20 @@ static void handle_context_menu(xcb_button_press_event_t *ev) {
         menu_show(conn, screen, visual, ctx_menu_x, ctx_menu_y,
                   trash_entry_menu, (int)(sizeof(trash_entry_menu) / sizeof(trash_entry_menu[0])));
     } else {
-        static const menu_item_t entry_menu[] = {
-            { "Open",       action_ctx_open,       NULL },
-            { "Copy",       action_ctx_copy,       NULL },
-            { "Cut",        action_ctx_cut,        NULL },
-            { "Rename...",  action_ctx_rename,     NULL },
-            { "New Folder", action_ctx_new_folder, NULL },
-            { "Delete...",  action_ctx_delete,     NULL },
-        };
-        menu_show(conn, screen, visual, ctx_menu_x, ctx_menu_y,
-                  entry_menu, (int)(sizeof(entry_menu) / sizeof(entry_menu[0])));
+        menu_item_t entry_menu[9];
+        int n = 0;
+        entry_menu[n++] = (menu_item_t){ "Open",       action_ctx_open,       NULL };
+        entry_menu[n++] = (menu_item_t){ "Copy",       action_ctx_copy,       NULL };
+        entry_menu[n++] = (menu_item_t){ "Cut",        action_ctx_cut,        NULL };
+        entry_menu[n++] = (menu_item_t){ "Rename...",  action_ctx_rename,     NULL };
+        entry_menu[n++] = (menu_item_t){ "New Folder", action_ctx_new_folder, NULL };
+        entry_menu[n++] = (menu_item_t){ "Compress to .tar.gz", action_ctx_compress, NULL };
+        if (!entries[idx].is_dir && is_archive(entries[idx].name)) {
+            entry_menu[n++] = (menu_item_t){ "Extract Here", action_ctx_extract, NULL };
+        }
+        entry_menu[n++] = (menu_item_t){ "Properties...", action_ctx_properties, NULL };
+        entry_menu[n++] = (menu_item_t){ "Delete...",  action_ctx_delete,     NULL };
+        menu_show(conn, screen, visual, ctx_menu_x, ctx_menu_y, entry_menu, n);
     }
 }
 
@@ -1050,8 +1457,10 @@ static void paint(void) {
     theme_font(cr, THEME_FONT_MD, 1);
     double px = PATH_X;
     double baseline = theme_baseline(0, HEADER_H, THEME_FONT_MD);
+    double path_avail_w = win_w - PATH_X - 8 - (filter_text[0] ? FILTER_CHIP_W : 0);
+    if (path_avail_w < 0) path_avail_w = 0;
     cairo_save(cr);
-    cairo_rectangle(cr, PATH_X, 0, win_w - PATH_X - 8, HEADER_H);
+    cairo_rectangle(cr, PATH_X, 0, path_avail_w, HEADER_H);
     cairo_clip(cr);
     {
         cairo_text_extents_t ext;
@@ -1096,6 +1505,45 @@ static void paint(void) {
     }
     cairo_restore(cr);
 
+    /* Filter chip: right-aligned in the header, only drawn while a filter is
+     * active. Click anywhere on it (see handle_button_press) to clear. */
+    if (filter_text[0]) {
+        double chip_h = UP_SIZE, chip_y = (HEADER_H - chip_h) / 2.0;
+        filter_chip_x1 = win_w - 8;
+        filter_chip_x0 = filter_chip_x1 - FILTER_CHIP_W;
+        theme_rgba(cr, THEME_ACCENT, hover_filter_chip ? 0.30 : 0.16);
+        theme_rounded_rect(cr, filter_chip_x0, chip_y, FILTER_CHIP_W, chip_h, THEME_RADIUS);
+        cairo_fill(cr);
+
+        /* Magnifying glass, drawn with primitives like the row category icons. */
+        double gx = filter_chip_x0 + 10, gy = HEADER_H / 2.0 - 1;
+        theme_rgba(cr, THEME_FG, 0.75);
+        cairo_set_line_width(cr, 1.4);
+        cairo_arc(cr, gx, gy, 4.2, 0, 2 * 3.14159);
+        cairo_stroke(cr);
+        cairo_move_to(cr, gx + 3.0, gy + 3.0);
+        cairo_line_to(cr, gx + 6.5, gy + 6.5);
+        cairo_stroke(cr);
+
+        theme_font(cr, THEME_FONT_SM, 0);
+        theme_rgb(cr, THEME_FG);
+        cairo_save(cr);
+        cairo_rectangle(cr, filter_chip_x0 + 20, 0, FILTER_CHIP_W - 34, HEADER_H);
+        cairo_clip(cr);
+        theme_text_ellipsized(cr, filter_chip_x0 + 20, theme_baseline(0, HEADER_H, THEME_FONT_SM),
+                               FILTER_CHIP_W - 34, filter_text);
+        cairo_restore(cr);
+
+        theme_rgba(cr, THEME_FG, 0.5);
+        cairo_move_to(cr, filter_chip_x1 - 14, HEADER_H / 2.0 - 5);
+        cairo_line_to(cr, filter_chip_x1 - 8, HEADER_H / 2.0 + 5);
+        cairo_move_to(cr, filter_chip_x1 - 8, HEADER_H / 2.0 - 5);
+        cairo_line_to(cr, filter_chip_x1 - 14, HEADER_H / 2.0 + 5);
+        cairo_stroke(cr);
+    } else {
+        filter_chip_x0 = filter_chip_x1 = -1;
+    }
+
     theme_rgba(cr, THEME_ACCENT, THEME_BORDER_ALPHA);
     cairo_rectangle(cr, 0, HEADER_H - 1, win_w, 1);
     cairo_fill(cr);
@@ -1104,8 +1552,9 @@ static void paint(void) {
     theme_font(cr, THEME_FONT_MD, 0);
 
     for (int r = 0; r < rows; r++) {
-        int idx = scroll_off + r;
-        if (idx >= entry_count) break;
+        int row_pos = scroll_off + r;
+        if (row_pos >= display_count) break;
+        int idx = display_idx[row_pos];
         entry_t *en = &entries[idx];
         double y = HEADER_H + r * ROW_H;
 
@@ -1138,19 +1587,19 @@ static void paint(void) {
                                win_w - TEXT_X - 12, en->name);
     }
 
-    /* Empty-folder note (the ".." up-entry doesn't count as contents). */
-    if (entry_count - (strcmp(cur_dir, "/") != 0 ? 1 : 0) <= 0) {
+    /* Empty note (the ".." up-entry doesn't count as contents). */
+    if (display_count - (strcmp(cur_dir, "/") != 0 ? 1 : 0) <= 0) {
         theme_font(cr, THEME_FONT_SM, 0);
         theme_rgba(cr, THEME_FG, 0.45);
-        cairo_move_to(cr, TEXT_X, HEADER_H + entry_count * ROW_H + 26);
-        cairo_show_text(cr, "nothing in here but dust bunnies");
+        cairo_move_to(cr, TEXT_X, HEADER_H + display_count * ROW_H + 26);
+        cairo_show_text(cr, filter_text[0] ? "no matches" : "nothing in here but dust bunnies");
     }
 
     /* Scroll hint: a thin bar on the right when the list overflows. */
-    if (entry_count > rows && rows > 0) {
+    if (display_count > rows && rows > 0) {
         double track_h = win_h - HEADER_H;
-        double thumb_h = track_h * ((double)rows / entry_count);
-        double thumb_y = HEADER_H + track_h * ((double)scroll_off / entry_count);
+        double thumb_h = track_h * ((double)rows / display_count);
+        double thumb_y = HEADER_H + track_h * ((double)scroll_off / display_count);
         theme_rgba(cr, THEME_ACCENT, 0.35);
         cairo_rectangle(cr, win_w - 4, thumb_y, 3, thumb_h);
         cairo_fill(cr);
@@ -1162,7 +1611,7 @@ static void paint(void) {
 }
 
 static void clamp_scroll(void) {
-    int max_off = entry_count - visible_rows();
+    int max_off = display_count - visible_rows();
     if (max_off < 0) max_off = 0;
     if (scroll_off > max_off) scroll_off = max_off;
     if (scroll_off < 0) scroll_off = 0;
@@ -1171,6 +1620,7 @@ static void clamp_scroll(void) {
 static void go_up(void) {
     char up[PATH_LEN + 4];
     snprintf(up, sizeof(up), "%s/..", cur_dir);
+    filter_text[0] = '\0';
     load_dir(up);
     paint();
 }
@@ -1181,6 +1631,7 @@ static void go_to_prefix(int len) {
     if (len <= 0 || len >= (int)sizeof(target)) return;
     memcpy(target, cur_dir, (size_t)len);
     target[len] = '\0';
+    filter_text[0] = '\0';
     load_dir(target);
     paint();
 }
@@ -1193,6 +1644,14 @@ static void handle_button_press(xcb_button_press_event_t *ev) {
     if (ev->detail != 1) return;
     if (ev->event_y < HEADER_H) {
         if (ev->event_x >= UP_X && ev->event_x < UP_X + UP_SIZE) { go_up(); return; }
+        if (filter_text[0] && ev->event_x >= filter_chip_x0 && ev->event_x < filter_chip_x1) {
+            filter_text[0] = '\0';
+            rebuild_display();
+            scroll_off = 0;
+            clamp_scroll();
+            paint();
+            return;
+        }
         for (int i = 0; i < seg_count; i++) {
             if (ev->event_x >= seg_x[i] && ev->event_x < seg_x2[i]) {
                 go_to_prefix(seg_len[i]);
@@ -1202,7 +1661,8 @@ static void handle_button_press(xcb_button_press_event_t *ev) {
         return;
     }
 
-    int idx = scroll_off + (ev->event_y - HEADER_H) / ROW_H;
+    int row_pos = scroll_off + (ev->event_y - HEADER_H) / ROW_H;
+    int idx = (row_pos >= 0 && row_pos < display_count) ? display_idx[row_pos] : -1;
     if (idx < 0 || idx >= entry_count) { sel_index = -1; paint(); return; }
 
     sel_index = idx;
@@ -1248,7 +1708,7 @@ int main(int argc, char **argv) {
     uint32_t values[2] = {
         screen->black_pixel,
         XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-            XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_LEAVE_WINDOW,
+            XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_KEY_PRESS,
     };
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, win, screen->root,
                        0, 0, INIT_WIDTH, INIT_HEIGHT, 0,
@@ -1285,33 +1745,64 @@ int main(int argc, char **argv) {
         case XCB_BUTTON_PRESS:
             handle_button_press((xcb_button_press_event_t *)event);
             break;
+        case XCB_KEY_PRESS: {
+            /* Type-to-filter, dmenu/nekos-launch style: typing narrows the
+             * listing live, Backspace un-narrows it, Escape clears it. */
+            xcb_key_press_event_t *ke = (xcb_key_press_event_t *)event;
+            xcb_keysym_t ks = xcb_key_press_lookup_keysym(keysyms, ke,
+                (ke->state & XCB_MOD_MASK_SHIFT) ? 1 : 0);
+            int changed = 0;
+            if (ks == XK_Escape) {
+                if (filter_text[0]) { filter_text[0] = '\0'; changed = 1; }
+            } else if (ks == XK_BackSpace) {
+                size_t l = strlen(filter_text);
+                if (l > 0) { filter_text[l - 1] = '\0'; changed = 1; }
+            } else if (ks >= 0x20 && ks <= 0x7e) {
+                size_t l = strlen(filter_text);
+                if (l < sizeof(filter_text) - 1) {
+                    filter_text[l] = (char)ks;
+                    filter_text[l + 1] = '\0';
+                    changed = 1;
+                }
+            }
+            if (changed) {
+                rebuild_display();
+                scroll_off = 0;
+                clamp_scroll();
+                paint();
+            }
+            break;
+        }
         case XCB_MOTION_NOTIFY: {
             xcb_motion_notify_event_t *me = (xcb_motion_notify_event_t *)event;
-            int row = -1, up = 0, seg = -1;
+            int row = -1, up = 0, seg = -1, chip = 0;
             if (me->event_y < HEADER_H) {
                 if (me->event_x >= UP_X && me->event_x < UP_X + UP_SIZE) up = 1;
+                else if (filter_text[0] && me->event_x >= filter_chip_x0 && me->event_x < filter_chip_x1) chip = 1;
                 else {
                     for (int i = 0; i < seg_count; i++) {
                         if (me->event_x >= seg_x[i] && me->event_x < seg_x2[i]) { seg = i; break; }
                     }
                 }
             } else {
-                int idx = scroll_off + (me->event_y - HEADER_H) / ROW_H;
-                if (idx >= 0 && idx < entry_count) row = idx;
+                int row_pos = scroll_off + (me->event_y - HEADER_H) / ROW_H;
+                if (row_pos >= 0 && row_pos < display_count) row = display_idx[row_pos];
             }
-            if (row != hover_row || up != hover_up || seg != hover_seg) {
+            if (row != hover_row || up != hover_up || seg != hover_seg || chip != hover_filter_chip) {
                 hover_row = row;
                 hover_up = up;
                 hover_seg = seg;
+                hover_filter_chip = chip;
                 paint();
             }
             break;
         }
         case XCB_LEAVE_NOTIFY:
-            if (hover_row != -1 || hover_up || hover_seg != -1) {
+            if (hover_row != -1 || hover_up || hover_seg != -1 || hover_filter_chip) {
                 hover_row = -1;
                 hover_up = 0;
                 hover_seg = -1;
+                hover_filter_chip = 0;
                 paint();
             }
             break;

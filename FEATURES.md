@@ -90,6 +90,22 @@ updates and drives the bar's update-count badge.
 - **Copy/Cut/Paste**: single-item clipboard; copy recursively walks files
   and whole directory trees, cut is an instant rename; both auto-uniquify
   on a name collision instead of clobbering.
+- **Type-to-filter**: typing while the window has focus live-filters the
+  current listing by substring match (dmenu/nekos-launch style), shown as a
+  clearable chip in the header; Escape or clicking the chip clears it.
+  Cleared on real navigation, preserved across a same-directory refresh.
+- **Hidden files**: off by default; "Show/Hide Hidden Files" in the
+  empty-area right-click menu toggles dotfiles in the listing.
+- **Archives**: "Compress to .tar.gz" on any file or folder (via `tar`, no
+  shell involved); "Extract Here" on a recognized `.zip`/`.tar(.gz|.bz2|.xz)`
+  (via `unzip`/`tar`). Extraction stages into a scratch dir first so a
+  single-top-level-entry archive (the common case) lands directly under its
+  own name rather than double-nesting, and a loose-files archive gets
+  gathered into one new folder instead of scattering across the current
+  directory.
+- **Properties**: a read-only panel (name, type, size, `rwxrwxrwx` +
+  octal permissions, owner/group, modified time) via "Properties..." on any
+  entry.
 
 ## Text editor (`editor/`)
 
