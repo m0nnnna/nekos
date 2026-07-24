@@ -29,6 +29,20 @@ pkill -f "x11vnc" 2>/dev/null || true
 # Session bus from a previous run (see the D-Bus block below).
 pkill -f "dbus-daemon.*nekos-session" 2>/dev/null || true
 
+# --- WSLg's X11 socket: some machines don't get it auto-mounted -------------
+# WSL is supposed to bind-mount WSLg's X11 socket dir into every distro at
+# /tmp/.X11-unix, but on some machines (seen on Windows 11 LTSC/IoT
+# Enterprise) that mount never happens even though WSLg's own compositor is
+# up and its socket exists at /mnt/wslg/.X11-unix -- a known WSLg issue
+# (microsoft/wslg#1122, #193). Without this, Xephyr can't reach the host
+# display at all ("cannot open host display. Is DISPLAY set?"), which looks
+# nothing like a missing-package problem and is easy to chase down the wrong
+# path. Symlinking it in is the documented workaround; harmless/no-op on a
+# normal machine where /tmp/.X11-unix already exists on its own.
+if [ ! -e /tmp/.X11-unix ] && [ -d /mnt/wslg/.X11-unix ]; then
+    ln -s /mnt/wslg/.X11-unix /tmp/.X11-unix
+fi
+
 # --- GL: real GPU via WSLg's d3d12 gallium driver ---------------------------
 # Xephyr -glamor gives clients on this display real DRI3, backed by Mesa's
 # d3d12 driver against /dev/dxg (WSLg's own GPU passthrough -- confirmed via
