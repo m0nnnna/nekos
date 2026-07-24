@@ -1,6 +1,8 @@
 #!/bin/sh
-# Run inside the nekos-void WSL2 distro. Installs everything needed to build
-# Xlibre's Xvfb DDX and serve it over VNC.
+# Run inside the nekos-void WSL2 distro. Installs the baseline package set
+# nekOS itself needs to build and run (window manager/compositor toolchain,
+# Chromium, mpv, dev tools). NekoShot and NekoPlayer bring their own
+# dependencies via provision/install-companions.sh.
 set -eu
 
 xbps-install -Sy \
@@ -61,17 +63,11 @@ xbps-install -Sy \
     xdg-desktop-portal \
     xdg-desktop-portal-gtk
 
-# NekoPlayer (a separately-sourced Flutter app, see install-nekoplayer.sh) is
-# built with a native Linux Flutter SDK, not the Windows one mounted at
-# /mnt/c/flutter -- that copy's shell scripts have CRLF line endings and
-# break under WSL bash. Clone it once if missing:
-if [ ! -d /opt/flutter ]; then
-    git clone --depth 1 -b stable https://github.com/flutter/flutter.git /opt/flutter
-fi
-git config --global --add safe.directory /opt/flutter
-export PATH="/opt/flutter/bin:$PATH"
-grep -q 'opt/flutter/bin' /root/.bashrc || echo 'export PATH="/opt/flutter/bin:$PATH"' >> /root/.bashrc
-flutter config --enable-linux-desktop >/dev/null 2>&1 || true
+# NekoPlayer (a separately-sourced Flutter app -- see provision/install-companions.sh)
+# brings its own native Linux Flutter SDK via its own nekos/install-nekos.sh
+# installer, not the Windows Flutter SDK some devs have mounted at
+# /mnt/c/flutter (that copy's shell scripts have CRLF line endings and break
+# under WSL bash). Nothing to do here.
 
 # xdg-desktop-portal: needed for file_picker's GTK file-chooser dialog (used
 # by NekoPlayer's "Add files"/"Add folder" -- file_picker on Linux only talks
@@ -90,20 +86,14 @@ EOF
 # \\wsl.localhost\<distro>\root\nekos-wallpapers\ once it exists (created on
 # first run of nekos-settings, or just mkdir it yourself ahead of time).
 
-# Chromium runs through ANGLE's GL backend under the session's Xvnc server
-# (which provides a working GLX via Mesa's software llvmpipe) -- see
-# provision/launch-browser.sh. The vulkan-loader/mesa-vulkan-lavapipe/
-# Vulkan-Tools packages below were needed for the OLD XLibre-Xvfb server, which
-# had no GLX and so drove Chromium via ANGLE-Vulkan-on-lavapipe instead; that
-# path fails on Xvnc and is no longer used. They're kept installed (harmless,
-# and still useful if you boot the XLibre Xvfb stack for GLX-less experiments).
-#
-# NOTE: as of 2026-07-21, the fully-provisioned nekos-void distro (this
-# script's output + build-xlibre.sh + the repo synced to ~/nekos) is also
-# available as a portable WSL export -- see the "New machine setup" memory
-# checklist for the exported-image path and import command, which is faster
-# than re-running this script from scratch on a new machine.
+# Chromium runs through ANGLE's GL backend (--use-gl=angle --use-angle=gl,
+# see provision/launch-browser.sh) against Xephyr -glamor's real DRI3/GLX,
+# backed by Mesa's d3d12 driver against WSLg's /dev/dxg. The vulkan-loader/
+# mesa-vulkan-lavapipe/Vulkan-Tools packages below are a leftover from an
+# earlier XLibre-Xvfb-based session (no GLX, so Chromium drove ANGLE over
+# Vulkan-on-lavapipe instead) that Xephyr has since replaced; kept installed
+# since they're harmless and still useful for any GLX-less experiments.
+# provision/build-xlibre.sh (unused by the current session) is the other
+# leftover from that abandoned path.
 
-echo "setup-void.sh: done. XLibre's dependency list isn't exhaustively documented" \
-     "upstream -- if 'meson setup' below reports missing deps, install them with" \
-     "xbps-install and re-run."
+echo "setup-void.sh: baseline install done."

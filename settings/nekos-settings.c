@@ -99,6 +99,11 @@ static int pet_enabled = 1;
 static int about_loaded = 0;
 static char about_kernel[128] = "";
 static char about_pkgs[64] = "";
+static char about_version[64] = "";
+
+/* Credits: not gathered, just static text. */
+static const char *const about_credits_line1 = "Mino, AI, nekos, noctrunal energy";
+static const char *const about_credits_line2 = "powered by frens";
 
 static xcb_atom_t intern(const char *name) {
     xcb_intern_atom_cookie_t cookie = xcb_intern_atom(conn, 0, (uint16_t)strlen(name), name);
@@ -201,6 +206,30 @@ static void load_about(void) {
             snprintf(about_pkgs, sizeof(about_pkgs), "%ld packages installed", n);
         }
         pclose(p);
+    }
+
+    /* Version comes from the repo's own git tags (~/nekos), same "shell out
+     * for live truth" style as the kernel/package facts above, so this label
+     * tracks whatever release/commit is actually checked out instead of
+     * going stale the moment a new version ships. Falls back to v0.0.1 --
+     * accurate today (nothing's been tagged yet) and harmless once tags
+     * exist (git describe will succeed and this branch won't run). */
+    const char *home = getenv("HOME");
+    if (home) {
+        char cmd[PATH_LEN + 64];
+        snprintf(cmd, sizeof(cmd), "git -C %s/nekos describe --tags 2>/dev/null", home);
+        FILE *vp = popen(cmd, "r");
+        if (vp) {
+            if (fgets(about_version, sizeof(about_version), vp)) {
+                size_t len = strlen(about_version);
+                while (len > 0 && (about_version[len - 1] == '\n' || about_version[len - 1] == '\r'))
+                    about_version[--len] = '\0';
+            }
+            pclose(vp);
+        }
+    }
+    if (!about_version[0]) {
+        snprintf(about_version, sizeof(about_version), "v0.0.1");
     }
 }
 
@@ -395,6 +424,14 @@ static void paint(void) {
         theme_rgb(cr, THEME_ACCENT);
         cairo_move_to(cr, x, 56);
         cairo_show_text(cr, "nekOS");
+        if (about_version[0]) {
+            cairo_text_extents_t title_ext;
+            cairo_text_extents(cr, "nekOS", &title_ext);
+            theme_font(cr, THEME_FONT_SM, 0);
+            theme_rgba(cr, THEME_ACCENT, 0.6);
+            cairo_move_to(cr, x + title_ext.x_advance + 10, 56);
+            cairo_show_text(cr, about_version);
+        }
         theme_font(cr, THEME_FONT_MD, 0);
         theme_rgba(cr, THEME_FG, 0.8);
         cairo_move_to(cr, x, 80);
@@ -431,6 +468,29 @@ static void paint(void) {
         cairo_move_to(cr, btn_x() + (BTN_W - ext.x_advance) / 2.0,
                       theme_baseline(btn_y(), BTN_H, THEME_FONT_MD));
         cairo_show_text(cr, "Open Software");
+
+        /* Credits */
+        double cy = btn_y() + BTN_H + 32;
+        theme_rgba(cr, THEME_ACCENT, 0.25);
+        cairo_rectangle(cr, x, cy, win_w - x - 24, 1);
+        cairo_fill(cr);
+        cy += 24;
+
+        theme_font(cr, THEME_FONT_XS, 1);
+        theme_rgba(cr, THEME_FG, 0.45);
+        cairo_move_to(cr, x, cy);
+        cairo_show_text(cr, "CREDITS");
+        cy += 20;
+
+        theme_font(cr, THEME_FONT_SM, 0);
+        theme_rgba(cr, THEME_FG, 0.7);
+        cairo_move_to(cr, x, cy);
+        cairo_show_text(cr, about_credits_line1);
+        cy += 20;
+
+        theme_rgba(cr, THEME_FG, 0.45);
+        cairo_move_to(cr, x, cy);
+        cairo_show_text(cr, about_credits_line2);
     }
 
     cairo_destroy(cr);

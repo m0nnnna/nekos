@@ -125,11 +125,10 @@ Chromium/Firefox/xterm, not just itself. Ctrl+A selects all.
 
 ## Backups (`shot/`)
 
-`nekos-shot` — a GUI front end for NekoShot (a separate project, canonical
-source at `N:\projects\nekoshot` on the host, not yet published anywhere;
-deployed into the image at `/opt/nekoshot` via
-`provision/install-nekoshot.sh` — see that script for the host-side sync
-command), the neko-powered live system-snapshot/backup tool. Mirrors
+`nekos-shot` — a GUI front end for [NekoShot](https://github.com/m0nnnna/NekoShot)
+(a separate, public project), the neko-powered live system-snapshot/backup
+tool, deployed into the image at `/opt/nekoshot` by its own installer via
+`provision/install-companions.sh`. Mirrors
 NekoShot's own terminal menu one-to-one as sidebar pages rather than
 reimplementing any backup/restore logic — every page just builds the
 equivalent `nekoshot ...` command and either runs it (streamed into a log

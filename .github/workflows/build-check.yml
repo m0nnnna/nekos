@@ -1,0 +1,55 @@
+name: build-check
+
+# Validates that nekOS (and its companion apps) still build cleanly from
+# source against the same Void Linux baseline the installer provisions.
+# This can't validate the actual GUI session -- that needs real WSLg + GPU
+# passthrough, which no Linux CI runner has -- so it's paired with the
+# manual smoke-test checklist in RELEASING.md before every tagged release.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build-nekos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build nekOS in a Void Linux container
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            ghcr.io/void-linux/void-glibc-full \
+            sh -c '
+              set -eu
+              xbps-install -Suy xbps
+              xbps-install -Suy
+              sh provision/setup-void.sh
+              make
+            '
+
+  build-companions:
+    runs-on: ubuntu-latest
+    # Skip on PRs: this also clones + builds the Flutter SDK for NekoPlayer,
+    # which is slow. Still runs on every push to master and on demand.
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Build NekoShot + NekoPlayer in a Void Linux container
+        run: |
+          docker run --rm ghcr.io/void-linux/void-glibc-full sh -c '
+            set -eu
+            xbps-install -Suy xbps
+            xbps-install -Suy
+            xbps-install -Sy git
+
+            echo "==> NekoShot"
+            git clone --depth 1 https://github.com/m0nnnna/NekoShot.git /root/nekoshot
+            sh /root/nekoshot/nekos/install-nekos.sh
+
+            echo "==> NekoPlayer"
+            git clone --depth 1 https://github.com/m0nnnna/nekoplayer.git /root/nekoplayer
+            sh /root/nekoplayer/nekos/install-nekos.sh
+          '

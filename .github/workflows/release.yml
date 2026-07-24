@@ -1,0 +1,23 @@
+name: release
+
+# Turns a pushed vX.Y.Z tag into a published GitHub Release. Doesn't re-run
+# the build -- build-check.yml already gates every push to master, and
+# RELEASING.md's process is to only tag a commit that's already green there
+# and has passed the manual Windows smoke test. This just publishes it.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
