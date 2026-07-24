@@ -1,0 +1,17 @@
+# Local Claude Code permissions (machine-specific, not shared)
+.claude/settings.local.json
+
+# Build artifacts
+*.o
+*.d
+wm/nekos-wm
+bar/nekos-bar
+desktop/nekos-desktop
+launch/nekos-launch
+notify/nekos-notify
+settings/nekos-settings
+software/nekos-software
+files/nekos-files
+pet/nekos-pet
+editor/nekos-edit
+shot/nekos-shot

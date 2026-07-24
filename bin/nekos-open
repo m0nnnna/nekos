@@ -1,0 +1,60 @@
+#!/bin/sh
+# nekos-open: open a path with the appropriate handler -- nekOS's minimal
+# stand-in for xdg-open. The single source of truth for file associations,
+# called (fork+exec, detached) by nekos-files, desktop icons, the launcher,
+# etc. Takes exactly one path argument.
+#
+#   directory        -> nekos-files (browse it)
+#   image            -> imlib2_view
+#   html/pdf/svg     -> chromium (via provision/launch-browser.sh, which owns
+#                       the working GL flags + profile-lock cleanup)
+#   dotfiles / known text, source & config extensions
+#                    -> nekos-edit (nekOS's own GUI text editor)
+#   everything else  -> $EDITOR (vi) in an xterm  (unrecognized extensions --
+#                       vi is always present, never executes the file, and
+#                       degrades gracefully on binary content, so it stays
+#                       the safe fallback for anything nekos-edit doesn't
+#                       already claim)
+set -eu
+
+[ $# -ge 1 ] || { echo "usage: nekos-open <path>" >&2; exit 2; }
+TARGET=$1
+
+# Resolve the repo root from this script's own location (<repo>/bin/nekos-open),
+# so sibling apps are found regardless of the caller's cwd.
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
+
+if [ -d "$TARGET" ]; then
+    exec "$REPO/files/nekos-files" "$TARGET"
+fi
+
+base=$(basename -- "$TARGET")
+
+# Dotfiles (.bashrc, .vimrc, .gitconfig, ...) are always text -- the
+# extension logic below would otherwise parse everything after their one dot
+# as an "extension" and miss them.
+case "$base" in
+    .*) exec "$REPO/editor/nekos-edit" "$TARGET" ;;
+esac
+
+case "$base" in
+    *.*) ext=$(printf '%s' "${base##*.}" | tr '[:upper:]' '[:lower:]') ;;
+    *)   ext="" ;;
+esac
+
+case "$ext" in
+    png|jpg|jpeg|gif|bmp|webp|tiff|tif|ppm|pnm|pgm|xpm|tga)
+        exec imlib2_view "$TARGET"
+        ;;
+    html|htm|pdf|svg)
+        exec "$REPO/provision/launch-browser.sh" "file://$TARGET"
+        ;;
+    ""|txt|md|markdown|c|h|cpp|cc|hpp|cxx|py|sh|bash|js|mjs|ts|tsx|jsx|json|\
+yaml|yml|toml|ini|cfg|conf|log|xml|css|rs|go|java|rb|pl|lua|sql|diff|patch)
+        exec "$REPO/editor/nekos-edit" "$TARGET"
+        ;;
+    *)
+        exec xterm -e "${EDITOR:-vi}" "$TARGET"
+        ;;
+esac
