@@ -37,6 +37,11 @@ On a Windows machine that has never run nekOS before (or after
 8. `./windows/install.ps1 -Channel master` and confirm it switches onto
    `master` instead; re-run with `-Channel release` (or no flag -- it's the
    default) and confirm it switches back to the latest tag.
+9. Once `release.yml`'s `companion-assets` job has finished (see below),
+   re-run `sh provision/install-companions.sh` inside `nekos-void` and
+   check the log: it should say "installed prebuilt (vX.Y.Z)" for both
+   NekoShot and NekoPlayer, not clone the Flutter SDK. Confirm both apps
+   still launch fine afterward.
 
 If anything in this list fails, fix it and re-run the whole checklist --
 don't cherry-pick just the failing step, since fixes can have side effects
@@ -54,9 +59,16 @@ git push origin vX.Y.Z
 Pushing the tag is the whole release step: `.github/workflows/release.yml`
 picks up any `v*.*.*` tag push and runs `gh release create --generate-notes`
 automatically, publishing it as a GitHub Release with auto-generated notes
-from the commits since the last tag. No binary assets need attaching --
-`install.ps1`/`provision/update.sh` always build from source, so the tag
-itself is the release artifact.
+from the commits since the last tag. nekOS itself always builds from source
+on the end user's machine (`install.ps1`/`provision/update.sh`), so no
+binary asset is needed for nekOS -- but the same workflow also builds
+NekoShot and NekoPlayer in a Void Linux container and uploads
+`nekoshot-linux-x86_64.tar.gz` / `nekoplayer-linux-x86_64.tar.gz` as release
+assets (`companion-assets` job), so `provision/install-companions.sh` can
+download prebuilt binaries instead of cloning the Flutter SDK on every
+install. That job takes a few extra minutes after the tag push -- installs
+that happen to land in that window just fall back to building from source,
+same as before this existed, so there's nothing to wait for or babysit.
 
 Installs on the `release` channel (the default) pick this up the next time
 `install.ps1` or `provision/update.sh --channel release` runs, by querying
