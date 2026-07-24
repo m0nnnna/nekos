@@ -123,10 +123,16 @@ setsid env DISPLAY="${HOST_DISPLAY}" Xephyr -glamor -screen "${DEFAULT_W}x${DEFA
 # warm d3d12/driver caches yet) can take longer than a fixed sleep assumes,
 # which otherwise races xrdb below into "Can't open display" against a
 # server that just isn't up yet.
+_xephyr_up=0
 for _i in $(seq 1 50); do
-    env DISPLAY="${DISPLAY_NUM}" xdpyinfo >/dev/null 2>&1 && break
+    env DISPLAY="${DISPLAY_NUM}" xdpyinfo >/dev/null 2>&1 && { _xephyr_up=1; break; }
     sleep 0.2
 done
+if [ "$_xephyr_up" -ne 1 ]; then
+    echo "start-session.sh: Xephyr didn't come up on ${DISPLAY_NUM} after 10s" \
+         "-- see /tmp/xephyr.log. Continuing anyway, but xrdb/WM/bar/desktop" \
+         "will likely fail to connect." >&2
+fi
 
 # --- xdg-desktop-portal: backs file_picker's GTK file-chooser dialog -------
 # file_picker (used by NekoPlayer's "Add files"/"Add folder") talks to the

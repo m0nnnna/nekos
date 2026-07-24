@@ -3,6 +3,18 @@
 # nekOS itself needs to build and run (window manager/compositor toolchain,
 # Chromium, mpv, dev tools). NekoShot and NekoPlayer bring their own
 # dependencies via provision/install-companions.sh.
+#
+# xorg-server-xephyr/mesa-dri/libgbm/pulseaudio-utils were found missing
+# here (2026-07-24) via a real fresh-install bug report: the nested X server
+# (Xephyr) itself was never actually in this list, only referenced in
+# comments -- it had been installed manually on the dev machine ages ago,
+# during the original Xvnc-to-Xephyr migration, and that never made it back
+# into this script. mesa-dri/libgbm (the GALLIUM_DRIVER=d3d12 driver +
+# buffer management start-session.sh's glamor path depends on) and
+# pulseaudio-utils (audio for mpv/NekoPlayer) were also manually installed
+# at some point and missing here -- added defensively since a missing GPU
+# driver fails silently (falls back to software rendering) rather than
+# loudly like the missing Xephyr binary did.
 set -eu
 
 xbps-install -Sy \
@@ -10,6 +22,10 @@ xbps-install -Sy \
     meson \
     ninja \
     git \
+    xorg-server-xephyr \
+    mesa-dri \
+    libgbm \
+    pulseaudio-utils \
     libxcb-devel \
     xcb-util-devel \
     pixman-devel \
