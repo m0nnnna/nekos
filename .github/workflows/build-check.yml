@@ -27,6 +27,7 @@ jobs:
               set -eu
               xbps-install -Suy xbps
               xbps-install -Suy
+              xbps-install -Sy base-system git
               sh provision/setup-void.sh
               make
             '
@@ -48,6 +49,7 @@ jobs:
               set -eu
               xbps-install -Suy xbps
               xbps-install -Suy
+              xbps-install -Sy base-system git
               sh provision/setup-void.sh
               sh provision/install-companions.sh
             '
