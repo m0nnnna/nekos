@@ -117,7 +117,16 @@ fi
 # window is resized, the same live-resize feel the old SetDesktopSize path gave.
 setsid env DISPLAY="${HOST_DISPLAY}" Xephyr -glamor -screen "${DEFAULT_W}x${DEFAULT_H}" \
     -resizeable -title nekOS "${DISPLAY_NUM}" >/tmp/xephyr.log 2>&1 < /dev/null &
-sleep 2
+
+# Poll until Xephyr is actually accepting connections on DISPLAY_NUM, instead
+# of guessing with a fixed sleep -- a cold machine (first-ever launch, no
+# warm d3d12/driver caches yet) can take longer than a fixed sleep assumes,
+# which otherwise races xrdb below into "Can't open display" against a
+# server that just isn't up yet.
+for _i in $(seq 1 50); do
+    env DISPLAY="${DISPLAY_NUM}" xdpyinfo >/dev/null 2>&1 && break
+    sleep 0.2
+done
 
 # --- xdg-desktop-portal: backs file_picker's GTK file-chooser dialog -------
 # file_picker (used by NekoPlayer's "Add files"/"Add folder") talks to the
@@ -174,10 +183,9 @@ fi
 # black-on-white -- merge assets/Xresources so it picks up the same palette
 # as everything else. One-shot, not backgrounded: xrdb just writes the
 # RESOURCE_MANAGER property and exits; every xterm launched afterward reads
-# it automatically, no per-launch wrapper needed. Deliberately placed here
-# (after the WM's own successful startup, not right after Xvnc's fixed
-# `sleep 2`) -- nekos-wm connecting successfully is proof the display is
-# actually up, which a fixed sleep can't guarantee.
+# it automatically, no per-launch wrapper needed. Safe to run any time after
+# the xdpyinfo poll above confirms the display is actually up (deliberately
+# not gated on nekos-wm being built/launched -- xterm and xrdb don't need it).
 env DISPLAY="${DISPLAY_NUM}" xrdb -nocpp -merge "$(dirname "$0")/../assets/Xresources" || true
 
 # nekos-desktop: the desktop layer (wallpaper + ~/Desktop icons + right-click

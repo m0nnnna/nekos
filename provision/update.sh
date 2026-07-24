@@ -66,6 +66,11 @@ echo "$CHANNEL" > "$CHANNEL_FILE"
 cd "$REPO_DIR"
 git fetch --tags origin >/dev/null 2>&1 || git fetch --tags origin
 OLD_REF="$(git rev-parse HEAD)"
+# A tagged release commit can happen to already be the tip of master (true
+# right after cutting a release), so on a brand-new clone the source can
+# already "match" the target ref before anything has ever been built. Only
+# skip the build below if a build actually exists, not just a matching ref.
+BUILT_MARKER="$REPO_DIR/wm/nekos-wm"
 
 if [ "$CHANNEL" = "master" ]; then
     git fetch origin master
@@ -83,14 +88,18 @@ if [ "$CHANNEL" = "master" ]; then
         fi
     fi
 
-    if [ "$CURRENT_MATCHES" -eq 1 ]; then
+    if [ "$CURRENT_MATCHES" -eq 1 ] && [ -x "$BUILT_MARKER" ]; then
         echo "update.sh: already up to date (master)."
         exit 0
     fi
 
-    echo "update.sh: updating to origin/master ($(git rev-parse --short "$TARGET"))..."
-    git checkout master
-    git merge --ff-only origin/master
+    if [ "$CURRENT_MATCHES" -eq 1 ]; then
+        echo "update.sh: already on master, but no build found -- building..."
+    else
+        echo "update.sh: updating to origin/master ($(git rev-parse --short "$TARGET"))..."
+        git checkout master
+        git merge --ff-only origin/master
+    fi
 else
     LATEST_JSON="$(curl -fsS "${REPO_API}/releases/latest" 2>/dev/null || true)"
     LATEST_TAG="$(printf '%s' "$LATEST_JSON" | grep -o '"tag_name" *: *"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
@@ -113,13 +122,17 @@ else
         fi
     fi
 
-    if [ "$CURRENT_TAG" = "$LATEST_TAG" ]; then
+    if [ "$CURRENT_TAG" = "$LATEST_TAG" ] && [ -x "$BUILT_MARKER" ]; then
         echo "update.sh: already up to date ($LATEST_TAG)."
         exit 0
     fi
 
-    echo "update.sh: updating to $LATEST_TAG..."
-    git checkout "$LATEST_TAG"
+    if [ "$CURRENT_TAG" = "$LATEST_TAG" ]; then
+        echo "update.sh: already on $LATEST_TAG, but no build found -- building..."
+    else
+        echo "update.sh: updating to $LATEST_TAG..."
+        git checkout "$LATEST_TAG"
+    fi
 fi
 
 echo "update.sh: building..."
