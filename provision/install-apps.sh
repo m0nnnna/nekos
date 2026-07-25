@@ -10,6 +10,17 @@ REPO=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
 APPS="${HOME}/.local/share/applications"
 mkdir -p "$APPS"
 
+cat > "$APPS/nekos-terminal.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=Command-line shell
+Icon=utilities-terminal
+Exec=sakura -e /bin/bash
+Terminal=false
+Categories=System;TerminalEmulator;
+EOF
+
 cat > "$APPS/nekos-files.desktop" <<EOF
 [Desktop Entry]
 Type=Application

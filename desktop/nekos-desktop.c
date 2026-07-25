@@ -463,12 +463,15 @@ static int icon_at(int16_t px, int16_t py) {
     return idx;
 }
 
-/* -e /bin/bash rather than bare "xterm": root's login shell is /bin/sh
- * (dash on Void), which xterm would otherwise run and which never reads
- * ~/.bashrc -- explicitly running bash here is what makes the nekOS
- * fastfetch splash (installed into ~/.bashrc by install-fastfetch.sh)
- * actually show up in a new terminal. */
-static const char *const argv_terminal[] = { "xterm", "-e", "/bin/bash", NULL };
+/* -e /bin/bash rather than bare "sakura": root's login shell is /bin/sh
+ * (dash on Void), which sakura would otherwise run and which never reads
+ * ~/.bashrc (no history/tab-completion either -- dash has no readline at
+ * all) -- explicitly running bash here is what makes the nekOS fastfetch
+ * splash (installed into ~/.bashrc by install-fastfetch.sh) actually show
+ * up in a new terminal. sakura replaced xterm (2026-07-24, nekos#36): real
+ * Ctrl+Shift+C/V copy-paste instead of xterm's X-primary-selection-only
+ * default, see provision/setup-void.sh's comment for the full reasoning. */
+static const char *const argv_terminal[] = { "sakura", "-e", "/bin/bash", NULL };
 static const char *const argv_files[]    = { "files/nekos-files", NULL };
 static const char *const argv_settings[] = { "settings/nekos-settings", NULL };
 

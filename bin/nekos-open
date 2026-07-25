@@ -10,7 +10,7 @@
 #                       the working GL flags + profile-lock cleanup)
 #   dotfiles / known text, source & config extensions
 #                    -> nekos-edit (nekOS's own GUI text editor)
-#   everything else  -> $EDITOR (vi) in an xterm  (unrecognized extensions --
+#   everything else  -> $EDITOR (vi) in sakura  (unrecognized extensions --
 #                       vi is always present, never executes the file, and
 #                       degrades gracefully on binary content, so it stays
 #                       the safe fallback for anything nekos-edit doesn't
@@ -55,6 +55,6 @@ yaml|yml|toml|ini|cfg|conf|log|xml|css|rs|go|java|rb|pl|lua|sql|diff|patch)
         exec "$REPO/editor/nekos-edit" "$TARGET"
         ;;
     *)
-        exec xterm -e "${EDITOR:-vi}" "$TARGET"
+        exec sakura -e "${EDITOR:-vi}" "$TARGET"
         ;;
 esac

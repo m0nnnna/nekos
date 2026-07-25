@@ -115,13 +115,13 @@ unsaved-changes dot on the WM titlebar), monospace rendering, mouse
 click-to-position and wheel scroll. Ctrl+S saves; a new/untitled buffer (or
 Ctrl+Shift+S) opens a "Save As" path prompt in the same style as the file
 manager's rename dialog. `nekos-open` routes dotfiles and known text/source/
-config extensions here instead of `$EDITOR` in an xterm; genuinely unknown
+config extensions here instead of `$EDITOR` in a terminal; genuinely unknown
 extensions still fall back to vi (safe default for anything that might be
 binary). Text selection (Shift+movement or mouse drag, highlighted inline)
 with Copy/Cut/Paste (Ctrl+C/X/V) backed by the real X11 CLIPBOARD selection --
 nekos-edit becomes the selection owner on copy/cut and answers other apps'
 requests, and paste pulls from whoever currently owns it, so it interops with
-Chromium/Firefox/xterm, not just itself. Ctrl+A selects all.
+Chromium/Firefox/sakura, not just itself. Ctrl+A selects all.
 
 ## Backups (`shot/`)
 
@@ -171,12 +171,14 @@ is the single shared palette/type-scale/spacing header every component
 includes, so the whole desktop reads as one visual system (Bibata-nekOS
 cursors, Papirus-Dark icons with pink folders).
 
-xterm gets the same treatment: a themed `assets/Xresources` (dark
-background, full 16-color ANSI palette pulled from `theme.h`) merged in via
-`xrdb` at session start, and every new terminal opens into a nekOS-branded
+sakura (nekOS's terminal, a libvte-based emulator with real Ctrl+Shift+C/V
+copy-paste — replacing xterm, whose only copy-paste was X primary-selection)
+gets the same treatment: a themed `assets/sakura.conf` (dark background,
+full 16-color ANSI palette pulled from `theme.h`) installed at session
+start, and every new terminal opens into a nekOS-branded
 [fastfetch](https://github.com/fastfetch-cli/fastfetch) splash — a
 recolored Void logo, and real session info (WM correctly detected as
-`nekos-wm`, the actual Xvnc display/resolution, cursor/icon theme) rather
+`nekos-wm`, the actual Xephyr display/resolution, cursor/icon theme) rather
 than the WSLg host session fastfetch would show by default.
 
 ## Known gaps (not done yet)

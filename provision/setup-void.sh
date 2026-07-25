@@ -15,6 +15,18 @@
 # at some point and missing here -- added defensively since a missing GPU
 # driver fails silently (falls back to software rendering) rather than
 # loudly like the missing Xephyr binary did.
+#
+# sakura replaced xterm (2026-07-24, nekos#36): xterm's default keybindings
+# have no Ctrl+Shift+C/V copy-paste (X primary-selection + middle-click
+# only), and the *system* xterm.desktop the launcher picked up ran bare
+# `xterm` -- root's login shell is /bin/sh (dash, see nekos-desktop.c's old
+# comment), which has no readline, so that specific launch path had no
+# command history or tab-completion either. sakura is libvte-based (real
+# Ctrl+Shift+C/V, scrollback, standard readline-friendly PTY behavior) and
+# every launch point now explicitly runs bash (see desktop/nekos-desktop.c,
+# launch/nekos-launch.c, provision/install-apps.sh) so there's exactly one
+# definition of "how to launch nekOS's terminal" instead of the desktop
+# menu and the launcher disagreeing.
 set -eu
 
 xbps-install -Sy \
@@ -33,8 +45,7 @@ xbps-install -Sy \
     font-util \
     tigervnc \
     xrandr \
-    xrdb \
-    xterm \
+    sakura \
     xclock \
     fastfetch \
     libX11-devel \

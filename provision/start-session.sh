@@ -179,8 +179,8 @@ sh "$(dirname "$0")/install-nekoshot.sh" || true
 # /opt/nekoplayer (see install-nekoplayer.sh for the host-side sync command).
 sh "$(dirname "$0")/install-nekoplayer.sh" || true
 
-# Branded fastfetch splash for every new xterm -- see the script for why it
-# needs the WAYLAND_DISPLAY/XDG_RUNTIME_DIR workaround.
+# Branded fastfetch splash for every new terminal -- see the script for why
+# it needs the WAYLAND_DISPLAY/XDG_RUNTIME_DIR workaround.
 sh "$(dirname "$0")/install-fastfetch.sh" || true
 
 # Default wallpaper: on a fresh install ~/nekos-wallpapers/ has nothing in it
@@ -210,14 +210,14 @@ else
     echo "start-session.sh: nekos-wm not built yet (expected at ${WM_BIN}); skipping WM launch."
 fi
 
-# xterm (nekOS's only terminal app) otherwise starts with X's stock
-# black-on-white -- merge assets/Xresources so it picks up the same palette
-# as everything else. One-shot, not backgrounded: xrdb just writes the
-# RESOURCE_MANAGER property and exits; every xterm launched afterward reads
-# it automatically, no per-launch wrapper needed. Safe to run any time after
-# the xdpyinfo poll above confirms the display is actually up (deliberately
-# not gated on nekos-wm being built/launched -- xterm and xrdb don't need it).
-env DISPLAY="${DISPLAY_NUM}" xrdb -nocpp -merge "$(dirname "$0")/../assets/Xresources" || true
+# sakura (nekOS's only terminal app) otherwise starts with its own stock
+# colors -- install assets/sakura.conf so it picks up the same palette as
+# everything else. Rewritten every launch (picks up repo changes, matches
+# install-apps.sh's own idempotent pattern) rather than merged like the old
+# Xresources approach, since sakura reads its own keyfile config instead of
+# core X resources.
+mkdir -p "${HOME}/.config/sakura" || true
+cp "$(dirname "$0")/../assets/sakura.conf" "${HOME}/.config/sakura/sakura.conf" || true
 
 # nekos-desktop: the desktop layer (wallpaper + ~/Desktop icons + right-click
 # menu). Launched after the WM so its _NET_WM_WINDOW_TYPE_DESKTOP window is

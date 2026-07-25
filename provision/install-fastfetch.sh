@@ -1,8 +1,9 @@
 #!/bin/sh
 # Installs a nekOS-branded fastfetch config (~/.config/fastfetch/config.jsonc)
-# and wires it to auto-run in every new interactive xterm. Run from
-# start-session.sh. Idempotent -- rewrites the config each launch (picking up
-# any repo changes) and only appends the .bashrc hook once.
+# and wires it to auto-run in every new interactive terminal, plus a terminal
+# title fix (see the second hook below). Run from start-session.sh. Idempotent
+# -- rewrites the config each launch (picking up any repo changes) and only
+# appends each .bashrc hook once.
 set -eu
 
 FF_DIR="${HOME}/.config/fastfetch"
@@ -62,4 +63,15 @@ BASHRC="${HOME}/.bashrc"
 touch "$BASHRC"
 if ! grep -qF "$HOOK" "$BASHRC" 2>/dev/null; then
     printf '\n# nekOS: show the branded system-info splash in every new interactive shell.\n%s\n' "$HOOK" >> "$BASHRC"
+fi
+
+# sakura (nekOS's terminal, see provision/setup-void.sh) defaults its WM_NAME
+# to the literal string "xterm" for legacy compatibility, and nothing else
+# sets a real title -- so every terminal window's titlebar misleadingly read
+# "xterm" even after the xterm->sakura swap (2026-07-24, nekos#36). Standard
+# OSC 0 title escape in PROMPT_COMMAND fixes it for every terminal, not just
+# sakura.
+TITLE_HOOK='PROMPT_COMMAND="printf \"\\033]0;Terminal\\007\""'
+if ! grep -qF "$TITLE_HOOK" "$BASHRC" 2>/dev/null; then
+    printf '\n# nekOS: sakura defaults to "xterm" as its window title -- set a real one.\n%s\n' "$TITLE_HOOK" >> "$BASHRC"
 fi
