@@ -114,6 +114,11 @@ typedef enum {
     RESIZE_RIGHT,
     RESIZE_BOTTOM,
     RESIZE_BOTTOM_RIGHT,
+    RESIZE_LEFT,
+    RESIZE_TOP,
+    RESIZE_TOP_LEFT,
+    RESIZE_TOP_RIGHT,
+    RESIZE_BOTTOM_LEFT,
 } resize_edge_t;
 
 /* Drag state for an in-progress move/resize. Keyed by frame window id (not a
@@ -135,6 +140,11 @@ static struct {
      * pointer let go, never one throttle tick behind. */
     int has_pending_resize;
     uint16_t pending_w, pending_h;
+    /* Only differ from start_frame_x/y for a left/top (or their corner)
+     * resize, which has to move the frame's origin to keep the opposite
+     * edge anchored while the near edge follows the pointer -- see
+     * client_handle_motion_notify's INTERACT_RESIZE branch. */
+    int16_t pending_x, pending_y;
     int64_t last_resize_ms;
     /* MOVE_THROTTLE_MS coalescing, mirroring has_pending_resize/pending_w/h/
      * last_resize_ms above: pending_move_x/y is where the frame should end up
@@ -364,6 +374,47 @@ static void apply_client_size(managed_client_t *mc, uint16_t new_width, uint16_t
     xcb_flush(conn);
 }
 
+/* Superset of apply_client_size that also repositions the frame's origin --
+ * needed for a left/top (or corner) interactive resize, where the edge under
+ * the pointer moves but the opposite edge must stay anchored, so the frame's
+ * x/y has to change alongside its width/height. A no-op position change
+ * (new_x/new_y equal to the frame's current origin) behaves identically to
+ * apply_client_size, so this is safe to use for every interactive-resize
+ * edge, not just the ones that actually move the origin. Only used by the
+ * interactive-resize path (client_handle_motion_notify/end_interaction) --
+ * client-initiated ConfigureRequests and other apply_client_size callers
+ * never need to move the frame. */
+static void apply_client_resize_geometry(managed_client_t *mc, int16_t new_x, int16_t new_y,
+                                          uint16_t new_width, uint16_t new_height) {
+    mc->frame_x = new_x;
+    mc->frame_y = new_y;
+    mc->client_width = new_width;
+    mc->client_height = new_height;
+
+    uint16_t frame_width = new_width + 2 * DECOR_BORDER;
+    uint16_t frame_height = new_height + TITLEBAR_HEIGHT + 2 * DECOR_BORDER;
+
+    uint32_t frame_values[4] = { (uint32_t)new_x, (uint32_t)new_y, frame_width, frame_height };
+    xcb_configure_window(conn, mc->frame,
+                          XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                              XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+                          frame_values);
+
+    uint32_t client_values[4] = { DECOR_BORDER, TITLEBAR_HEIGHT, new_width, new_height };
+    xcb_configure_window(conn, mc->client,
+                          XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                              XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+                          client_values);
+
+    send_synthetic_configure(mc);
+
+    compositor_move(mc->frame, new_x, new_y);
+    compositor_resize(mc->frame, frame_width, frame_height);
+    repaint_decor(mc, focused_frame == mc->frame);
+
+    xcb_flush(conn);
+}
+
 /* Applies a new size to a dock (nekos-bar). Docks carry no decoration -- the
  * frame is exactly the client size and the client sits at the frame origin --
  * so they can't go through apply_client_size (which insets by the titlebar/
@@ -563,16 +614,37 @@ static void focus_window(xcb_window_t frame) {
     xcb_flush(conn);
 }
 
-/* Right/bottom/bottom-right edges only -- left/top-edge resize would also
- * need to shift the frame's position to keep the opposite edge anchored,
- * which is left for a future pass. A left/top-margin click still just
- * focuses (see client_handle_button_press) rather than doing nothing. */
+/* Hit-test margin for resize edges/corners, in frame-relative pixels --
+ * deliberately more generous than the drawn DECOR_BORDER (decor.h) so edges,
+ * and especially corners (which need to satisfy two edges' margins at once),
+ * are actually easy to grab regardless of how thin the visual border is
+ * drawn. Same "forgive a little pointer imprecision" reasoning as
+ * SNAP_EDGE_PX above. */
+#define RESIZE_MARGIN 8
+
+/* All 8 edges/corners, tested against the full frame rect -- including the
+ * titlebar strip at the top, since that's the only place a top/top-corner
+ * resize can be grabbed at all (frame geometry has no room above the
+ * titlebar; see decor.c's cat-ear-accents comment). Safe to call
+ * unconditionally from the titlebar-click path (client_handle_button_press)
+ * as long as decor button hits are checked first there: a close/maximize/
+ * minimize click landing near the top-right corner must never be swallowed
+ * by a resize instead, and button-hit-testing runs and returns early before
+ * this ever gets called for those pixels. */
 static resize_edge_t hit_test_resize_edge(uint16_t frame_width, uint16_t frame_height,
                                            int16_t x, int16_t y) {
-    int on_right = x >= frame_width - DECOR_BORDER;
-    int on_bottom = y >= frame_height - DECOR_BORDER;
-    if (on_right && on_bottom) return RESIZE_BOTTOM_RIGHT;
+    int on_left   = x < RESIZE_MARGIN;
+    int on_right  = x >= frame_width - RESIZE_MARGIN;
+    int on_top    = y < RESIZE_MARGIN;
+    int on_bottom = y >= frame_height - RESIZE_MARGIN;
+
+    if (on_top && on_left) return RESIZE_TOP_LEFT;
+    if (on_top && on_right) return RESIZE_TOP_RIGHT;
+    if (on_bottom && on_left) return RESIZE_BOTTOM_LEFT;
+    if (on_bottom && on_right) return RESIZE_BOTTOM_RIGHT;
+    if (on_left) return RESIZE_LEFT;
     if (on_right) return RESIZE_RIGHT;
+    if (on_top) return RESIZE_TOP;
     if (on_bottom) return RESIZE_BOTTOM;
     return RESIZE_NONE;
 }
@@ -626,7 +698,8 @@ static void end_interaction(void) {
      * throttle tick happened to land. */
     if (interaction.kind == INTERACT_RESIZE && interaction.has_pending_resize) {
         managed_client_t *mc = find_by_frame(interaction.frame);
-        if (mc) apply_client_size(mc, interaction.pending_w, interaction.pending_h);
+        if (mc) apply_client_resize_geometry(mc, interaction.pending_x, interaction.pending_y,
+                                              interaction.pending_w, interaction.pending_h);
         interaction.has_pending_resize = 0;
     }
     /* A throttled-away move (see MOVE_THROTTLE_MS) may still be pending when
@@ -1290,6 +1363,23 @@ void client_handle_button_press(xcb_button_press_event_t *ev) {
             return;
         }
 
+        /* Top edge/corner resize: only reachable here once no button was
+         * hit above, so a close/maximize/minimize click near the top-right
+         * corner always wins over this. This is the only place a top-edge
+         * or top-corner resize can start at all -- the titlebar strip is the
+         * only frame real estate above the client (see hit_test_resize_edge's
+         * comment) -- while left/right/bottom-only edges reaching into this
+         * same strip (e.g. the thin column beside the titlebar) are also
+         * caught here rather than falling through to the move/focus logic
+         * below. */
+        resize_edge_t top_edge = hit_test_resize_edge(frame_width, frame_height,
+                                                        ev->event_x, ev->event_y);
+        if (top_edge != RESIZE_NONE && !mc->maximized) {
+            focus_window(mc->frame);
+            begin_interaction(mc, INTERACT_RESIZE, top_edge, ev->root_x, ev->root_y);
+            return;
+        }
+
         focus_window(mc->frame);
 
         if (last_titlebar_click_frame == mc->frame &&
@@ -1317,8 +1407,8 @@ void client_handle_button_press(xcb_button_press_event_t *ev) {
     if (edge != RESIZE_NONE && !mc->maximized) {
         begin_interaction(mc, INTERACT_RESIZE, edge, ev->root_x, ev->root_y);
     }
-    /* Left-margin clicks (no resize edge recognized there, see
-     * hit_test_resize_edge) just focus, same as clicking anywhere else. */
+    /* A border click below the titlebar that missed every edge/corner
+     * margin just focuses, same as clicking anywhere else. */
 }
 
 /* Hover tracking for the paw buttons: repaints the decor only when the
@@ -1420,31 +1510,62 @@ void client_handle_motion_notify(xcb_motion_notify_event_t *ev) {
     /* INTERACT_RESIZE */
     int new_client_w = mc->client_width;
     int new_client_h = mc->client_height;
+    int16_t new_frame_x = interaction.start_frame_x;
+    int16_t new_frame_y = interaction.start_frame_y;
 
-    if (interaction.edge == RESIZE_RIGHT || interaction.edge == RESIZE_BOTTOM_RIGHT) {
+    int grows_right  = interaction.edge == RESIZE_RIGHT || interaction.edge == RESIZE_TOP_RIGHT ||
+                        interaction.edge == RESIZE_BOTTOM_RIGHT;
+    int grows_left   = interaction.edge == RESIZE_LEFT || interaction.edge == RESIZE_TOP_LEFT ||
+                        interaction.edge == RESIZE_BOTTOM_LEFT;
+    int grows_bottom = interaction.edge == RESIZE_BOTTOM || interaction.edge == RESIZE_BOTTOM_LEFT ||
+                        interaction.edge == RESIZE_BOTTOM_RIGHT;
+    int grows_top    = interaction.edge == RESIZE_TOP || interaction.edge == RESIZE_TOP_LEFT ||
+                        interaction.edge == RESIZE_TOP_RIGHT;
+
+    if (grows_right) {
         new_client_w = (int)(interaction.start_frame_w - 2 * DECOR_BORDER) + dx;
         if (new_client_w < MIN_CLIENT_SIZE) new_client_w = MIN_CLIENT_SIZE;
     }
-    if (interaction.edge == RESIZE_BOTTOM || interaction.edge == RESIZE_BOTTOM_RIGHT) {
+    if (grows_left) {
+        /* The right edge has to stay anchored, so frame_x moves by however
+         * much the width actually changed -- which may be less than dx once
+         * MIN_CLIENT_SIZE clamps it -- not by dx itself, or the right edge
+         * would keep drifting right even after the drag clamps. */
+        int start_client_w = (int)interaction.start_frame_w - 2 * DECOR_BORDER;
+        int want_w = start_client_w - dx;
+        new_client_w = want_w < MIN_CLIENT_SIZE ? MIN_CLIENT_SIZE : want_w;
+        new_frame_x = (int16_t)(interaction.start_frame_x + (start_client_w - new_client_w));
+    }
+    if (grows_bottom) {
         new_client_h = (int)(interaction.start_frame_h - TITLEBAR_HEIGHT - 2 * DECOR_BORDER) + dy;
         if (new_client_h < MIN_CLIENT_SIZE) new_client_h = MIN_CLIENT_SIZE;
+    }
+    if (grows_top) {
+        /* Mirrors grows_left: keeps the bottom edge anchored. */
+        int start_client_h = (int)interaction.start_frame_h - TITLEBAR_HEIGHT - 2 * DECOR_BORDER;
+        int want_h = start_client_h - dy;
+        new_client_h = want_h < MIN_CLIENT_SIZE ? MIN_CLIENT_SIZE : want_h;
+        new_frame_y = (int16_t)(interaction.start_frame_y + (start_client_h - new_client_h));
     }
 
     /* Track where the pointer says the edge should be on every motion event
      * (cheap: just arithmetic), but only actually reconfigure the client and
      * re-fetch its compositor pixmap at RESIZE_THROTTLE_MS intervals -- see
      * the constant's comment. end_interaction() applies any still-pending
-     * size on button-release, so this never leaves the window visibly
-     * lagging behind a stationary pointer. */
+     * size/position on button-release, so this never leaves the window
+     * visibly lagging behind a stationary pointer. */
     interaction.pending_w = (uint16_t)new_client_w;
     interaction.pending_h = (uint16_t)new_client_h;
+    interaction.pending_x = new_frame_x;
+    interaction.pending_y = new_frame_y;
     interaction.has_pending_resize = 1;
 
     int64_t now = anim_now_ms();
     if (now - interaction.last_resize_ms < RESIZE_THROTTLE_MS) return;
     interaction.last_resize_ms = now;
     interaction.has_pending_resize = 0;
-    apply_client_size(mc, interaction.pending_w, interaction.pending_h);
+    apply_client_resize_geometry(mc, interaction.pending_x, interaction.pending_y,
+                                  interaction.pending_w, interaction.pending_h);
 }
 
 void client_handle_button_release(xcb_button_release_event_t *ev) {
