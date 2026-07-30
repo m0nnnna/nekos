@@ -180,13 +180,21 @@ sh "$(dirname "$0")/install-nekoplayer.sh" || true
 # needs the WAYLAND_DISPLAY/XDG_RUNTIME_DIR workaround.
 sh "$(dirname "$0")/install-fastfetch.sh" || true
 
-# Default wallpaper: on a fresh session with no wallpaper ever picked, seed the
-# config with the shipped default (~/nekos-wallpapers/wallpaper.jpg) so both
-# readers of the config (nekos-wm's compositor and nekos-desktop) and the
-# Settings highlight all agree without needing their own fallback logic. Runs
-# before the WM launches so the compositor's restore-on-start sees it.
+# Default wallpaper: on a fresh install ~/nekos-wallpapers/ has nothing in it
+# yet (nekos-settings only mkdir's the directory, it doesn't seed content), so
+# copy the shipped default in once. Then, on a fresh session with no wallpaper
+# ever picked, seed the config with it so both readers of the config
+# (nekos-wm's compositor and nekos-desktop) and the Settings highlight all
+# agree without needing their own fallback logic. Runs before the WM launches
+# so the compositor's restore-on-start sees it.
+_wp_dir="${HOME}/nekos-wallpapers"
 _wp_config="${HOME}/.config/nekos/wallpaper"
-_wp_default="${HOME}/nekos-wallpapers/wallpaper.jpg"
+_wp_default="${_wp_dir}/default.png"
+_wp_shipped="$(dirname "$0")/../assets/wallpapers/default.png"
+if [ ! -e "$_wp_default" ] && [ -f "$_wp_shipped" ]; then
+    mkdir -p "$_wp_dir" || true
+    cp "$_wp_shipped" "$_wp_default" || true
+fi
 if [ ! -s "$_wp_config" ] && [ -f "$_wp_default" ]; then
     mkdir -p "${HOME}/.config/nekos" || true
     printf '%s\n' "$_wp_default" > "$_wp_config" || true

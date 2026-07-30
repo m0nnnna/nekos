@@ -467,7 +467,27 @@ void compositor_resize(xcb_window_t frame, uint16_t width, uint16_t height) {
 
     c->width = width;
     c->height = height;
-    fetch_pixmap(c);
+    /* Deliberately NOT calling fetch_pixmap() here -- same reasoning as
+     * compositor_manage_override()'s deferred fetch: naming the pixmap this
+     * early gets whatever undefined content X hands back for a just-resized
+     * backing pixmap (in practice: solid black), and compositor_paint would
+     * flush that to screen on the very next frame, before the client has
+     * painted anything at the new size. That was the cause of the black
+     * flash-on-resize/drag flicker (nekos#resize-flicker). Instead, drop the
+     * now-stale surface/pixmap and let compositor_handle_damage_notify's
+     * `if (!c->surface) fetch_pixmap(c)` do the fetch lazily on the client's
+     * first real post-resize repaint. compositor_paint's `if (!c->surface)
+     * continue` skips drawing this compositable in the meantime, so the
+     * gap shows the wallpaper/background underneath instead of a garbage
+     * pixmap -- a brief gap in content, not a flash of black. */
+    if (c->surface) {
+        cairo_surface_destroy(c->surface);
+        c->surface = NULL;
+    }
+    if (c->pixmap != XCB_NONE) {
+        xcb_free_pixmap(conn, c->pixmap);
+        c->pixmap = XCB_NONE;
+    }
     c->dirty = 1; /* dirty alone is enough now -- see compositor_paint's throttle gate */
 }
 

@@ -11,7 +11,14 @@
 #define MENU_WIDTH   140
 #define ROW_HEIGHT   28
 
-static void paint(cairo_surface_t *surface, uint16_t width, uint16_t height,
+/* Draws into the off-screen `surface` (backed by `pixmap`, not the visible
+ * popup window), then blits the finished frame to `popup` in one
+ * xcb_copy_area. Building the frame directly on the window -- what nekos-wm's
+ * compositor names as its pixmap -- risked the compositor's copy landing
+ * mid-draw (half-painted rows/highlight), a real flicker on hover/hover-away.
+ * Mirrors nekos-wm's own backbuffer_pixmap -> overlay copy in compositor.c. */
+static void paint(xcb_connection_t *conn, xcb_window_t popup, xcb_pixmap_t pixmap,
+                   xcb_gcontext_t gc, cairo_surface_t *surface, uint16_t width, uint16_t height,
                    const menu_item_t *items, int item_count, int hover_idx) {
     cairo_t *cr = cairo_create(surface);
 
@@ -37,6 +44,8 @@ static void paint(cairo_surface_t *surface, uint16_t width, uint16_t height,
     cairo_stroke(cr);
 
     cairo_destroy(cr);
+    xcb_copy_area(conn, pixmap, popup, gc, 0, 0, 0, 0, width, height);
+    xcb_flush(conn);
 }
 
 /* Item index at root-relative (rx, ry), or -1 if outside the popup or not
@@ -75,15 +84,19 @@ void menu_show(xcb_connection_t *conn, xcb_screen_t *screen, xcb_visualtype_t *v
      * same technique nekos-wm's client.c uses for interactive move/resize.
      * owner_events=0 means motion/button events are reported to us using
      * this mask regardless of the popup window's own selected mask. */
-    xcb_grab_pointer_cookie_t gc = xcb_grab_pointer(
+    xcb_grab_pointer_cookie_t grab_cookie = xcb_grab_pointer(
         conn, 0, screen->root,
         XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_POINTER_MOTION,
         XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, XCB_NONE, XCB_NONE, XCB_CURRENT_TIME);
-    xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(conn, gc, NULL);
+    xcb_grab_pointer_reply_t *gr = xcb_grab_pointer_reply(conn, grab_cookie, NULL);
     int grabbed = gr && gr->status == XCB_GRAB_STATUS_SUCCESS;
     free(gr);
 
-    cairo_surface_t *surface = cairo_xcb_surface_create(conn, popup, visual, width, height);
+    xcb_pixmap_t pixmap = xcb_generate_id(conn);
+    xcb_create_pixmap(conn, screen->root_depth, pixmap, popup, width, height);
+    xcb_gcontext_t gc = xcb_generate_id(conn);
+    xcb_create_gc(conn, gc, popup, 0, NULL);
+    cairo_surface_t *surface = cairo_xcb_surface_create(conn, pixmap, visual, width, height);
     int hover_idx = -1;
     int selected_idx = -1;
 
@@ -93,8 +106,7 @@ void menu_show(xcb_connection_t *conn, xcb_screen_t *screen, xcb_visualtype_t *v
         goto teardown;
     }
 
-    paint(surface, width, height, items, item_count, hover_idx);
-    xcb_flush(conn);
+    paint(conn, popup, pixmap, gc, surface, width, height, items, item_count, hover_idx);
 
     /* The compositor only sets up damage tracking for this override-redirect
      * popup once nekos-wm processes its MapNotify -- which races with the
@@ -109,8 +121,7 @@ void menu_show(xcb_connection_t *conn, xcb_screen_t *screen, xcb_visualtype_t *v
         struct pollfd pfd = { .fd = xfd, .events = POLLIN, .revents = 0 };
         poll(&pfd, 1, settled ? -1 : 40);
         if (!settled) {
-            paint(surface, width, height, items, item_count, hover_idx);
-            xcb_flush(conn);
+            paint(conn, popup, pixmap, gc, surface, width, height, items, item_count, hover_idx);
             settled = 1;
         }
 
@@ -120,16 +131,14 @@ void menu_show(xcb_connection_t *conn, xcb_screen_t *screen, xcb_visualtype_t *v
             if (rt == XCB_EXPOSE) {
                 xcb_expose_event_t *ee = (xcb_expose_event_t *)event;
                 if (ee->window == popup) {
-                    paint(surface, width, height, items, item_count, hover_idx);
-                    xcb_flush(conn);
+                    paint(conn, popup, pixmap, gc, surface, width, height, items, item_count, hover_idx);
                 }
             } else if (rt == XCB_MOTION_NOTIFY) {
                 xcb_motion_notify_event_t *me = (xcb_motion_notify_event_t *)event;
                 int idx = hit_test(x, y, width, height, item_count, me->root_x, me->root_y);
                 if (idx != hover_idx) {
                     hover_idx = idx;
-                    paint(surface, width, height, items, item_count, hover_idx);
-                    xcb_flush(conn);
+                    paint(conn, popup, pixmap, gc, surface, width, height, items, item_count, hover_idx);
                 }
             } else if (rt == XCB_BUTTON_PRESS) {
                 xcb_button_press_event_t *be = (xcb_button_press_event_t *)event;
@@ -147,6 +156,8 @@ void menu_show(xcb_connection_t *conn, xcb_screen_t *screen, xcb_visualtype_t *v
 
 teardown:
     cairo_surface_destroy(surface);
+    xcb_free_gc(conn, gc);
+    xcb_free_pixmap(conn, pixmap);
     xcb_destroy_window(conn, popup);
     xcb_flush(conn);
 
