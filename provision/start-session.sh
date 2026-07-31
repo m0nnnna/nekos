@@ -51,9 +51,12 @@ fi
 # try zink first) and lands every client, including nekos-wm and the bar,
 # directly on real hardware rendering. This replaces the old Xvnc-era
 # llvmpipe/LIBGL_ALWAYS_SOFTWARE pin, which existed only because Xvnc had no
-# GPU path at all.
+# GPU path at all -- that era also blanket-disabled GDK's own GL usage
+# (GDK_GL=disable) for the same reason, a leftover that outlived Xvnc itself
+# and silently broke NekoPlayer (Flutter-via-GTK, the one baseline app that
+# actually needs a working GDK GL context -- everything else is raw X11/cairo
+# or Chromium's own independent ANGLE context) until removed here.
 export GALLIUM_DRIVER=d3d12
-export GDK_GL=disable
 export GSK_RENDERER=cairo   # GTK4's equivalent, harmless where GTK4 is absent
 
 # --- XDG_RUNTIME_DIR: needs to be owned by root, not WSLg's uid-1000 dir ----
