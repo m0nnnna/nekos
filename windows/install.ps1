@@ -78,10 +78,21 @@ if ($existingDistros -contains $DistroName) {
     }
 
     Write-Step "Bootstrapping the base Void Linux system (rootfs tarballs ship without one)..."
-    Invoke-InDistro "xbps-install -Suy xbps"
-    Invoke-InDistro "xbps-install -Suy"
     Invoke-InDistro "xbps-install -Sy base-system git"
 }
+
+# Always fully upgrade the installed package set before installing/refreshing
+# anything else -- not just on a fresh import. `xbps-install -Sy <pkglist>`
+# (setup-void.sh, below) only refreshes the repodata index, it does not
+# upgrade already-installed packages; on a distro that's sat untouched for a
+# while, that drift between "index" and "installed base" is exactly what
+# produces xbps's "unresolved shlibs" error the first time setup-void.sh
+# tries to pull in a package that needs a newer soname than the stale base
+# system provides. Void's own docs call for running -Suy twice: the first
+# pass can update xbps itself mid-transaction.
+Write-Step "Fully upgrading $DistroName's package set..."
+Invoke-InDistro "xbps-install -Suy xbps"
+Invoke-InDistro "xbps-install -Suy"
 
 # --- 3. Clone nekOS (full clone -- update.sh needs release tags reachable,
 #        which a shallow clone can't cleanly check out later) ---------------
