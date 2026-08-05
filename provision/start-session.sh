@@ -179,6 +179,12 @@ sh "$(dirname "$0")/install-nekoshot.sh" || true
 # /opt/nekoplayer (see install-nekoplayer.sh for the host-side sync command).
 sh "$(dirname "$0")/install-nekoplayer.sh" || true
 
+# Starts the NekoMail background mail-sync server (if installed to
+# /opt/nekomail -- see install-nekomail.sh for the host-side sync command)
+# and refreshes its .desktop entry. Unlike the two above, this one also
+# launches a persistent background process, not just PATH/menu wiring.
+sh "$(dirname "$0")/install-nekomail.sh" || true
+
 # Branded fastfetch splash for every new terminal -- see the script for why
 # it needs the WAYLAND_DISPLAY/XDG_RUNTIME_DIR workaround.
 sh "$(dirname "$0")/install-fastfetch.sh" || true
