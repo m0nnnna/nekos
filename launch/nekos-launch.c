@@ -58,6 +58,15 @@ static xcb_screen_t *screen;
 static xcb_visualtype_t *visual;
 static xcb_window_t win;
 static xcb_key_symbols_t *keysyms;
+/* Off-screen backbuffer: paint() draws here, then blits to `win` in one
+ * xcb_copy_area. Drawing the WIN_W x WIN_H frame (search box, count, every
+ * row's highlight/icon/text) takes many separate cairo/XRender requests; if
+ * those land directly on the window (which is what nekos-wm's compositor
+ * names as its pixmap), a repaint racing the compositor's copy can catch a
+ * half-drawn frame -- the visible flicker on typing/hover. Mirrors
+ * nekos-wm's own backbuffer_pixmap -> overlay copy in compositor.c. */
+static xcb_pixmap_t backbuffer;
+static xcb_gcontext_t backbuffer_gc;
 static int win_x, win_y;
 
 static app_t apps[MAX_APPS];
@@ -278,7 +287,7 @@ static void keep_sel_visible(void) {
 }
 
 static void paint(void) {
-    cairo_surface_t *surface = cairo_xcb_surface_create(conn, win, visual, WIN_W, WIN_H);
+    cairo_surface_t *surface = cairo_xcb_surface_create(conn, backbuffer, visual, WIN_W, WIN_H);
     cairo_t *cr = cairo_create(surface);
 
     theme_rgb(cr, THEME_BG);
@@ -366,6 +375,7 @@ static void paint(void) {
 
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
+    xcb_copy_area(conn, backbuffer, win, backbuffer_gc, 0, 0, 0, 0, WIN_W, WIN_H);
     xcb_flush(conn);
 }
 
@@ -429,6 +439,11 @@ int main(void) {
     xcb_create_window(conn, XCB_COPY_FROM_PARENT, win, screen->root,
                        (int16_t)win_x, (int16_t)win_y, WIN_W, WIN_H, 0,
                        XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, mask, values);
+    backbuffer = xcb_generate_id(conn);
+    xcb_create_pixmap(conn, screen->root_depth, backbuffer, win, WIN_W, WIN_H);
+    backbuffer_gc = xcb_generate_id(conn);
+    xcb_create_gc(conn, backbuffer_gc, win, 0, NULL);
+
     xcb_map_window(conn, win);
     xcb_flush(conn);
 

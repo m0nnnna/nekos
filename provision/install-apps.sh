@@ -89,3 +89,28 @@ Exec=$REPO/provision/launch-browser.sh %U
 Terminal=false
 Categories=Network;WebBrowser;
 EOF
+
+# Overrides the system xterm.desktop (same basename -> dedup) so the menu's
+# "Terminal" runs the same `xterm -e /bin/bash` login shell as the desktop
+# right-click menu (see desktop/nekos-desktop.c) instead of plain `xterm`,
+# which drops into root's /bin/sh (dash) with no .bashrc/fastfetch splash.
+# uxterm.desktop ships alongside it and would otherwise show as a second,
+# redundant "Terminal" entry -- NoDisplay hides it rather than deleting it,
+# since it's a system-owned file we don't want to touch directly.
+cat > "$APPS/xterm.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=standard terminal emulator for the X window system
+Icon=xterm-color_48x48
+Exec=xterm -e /bin/bash
+Terminal=false
+Categories=System;TerminalEmulator;
+EOF
+
+cat > "$APPS/uxterm.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=UXTerm
+NoDisplay=true
+EOF

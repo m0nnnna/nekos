@@ -58,6 +58,16 @@ static xcb_screen_t *screen;
 static xcb_visualtype_t *visual;     /* ARGB if available, else root */
 static int have_argb;
 static xcb_window_t win;
+/* Off-screen backbuffer: paint() draws here, then blits to `win` in one
+ * xcb_copy_area. The cat's drawing is many separate cairo/XRender calls
+ * (clear, tail, legs, body, face, heart/zzz); painting them straight onto
+ * `win` -- what nekos-wm's compositor names as its pixmap -- let the
+ * compositor's copy land mid-draw (e.g. just after the transparent clear,
+ * before the cat itself), a real flicker while chasing the cursor every
+ * TICK_ACTIVE_MS. Mirrors nekos-wm's own backbuffer_pixmap -> overlay copy
+ * in compositor.c. */
+static xcb_pixmap_t backbuffer;
+static xcb_gcontext_t backbuffer_gc;
 
 static double pos_x, pos_y;          /* window top-left, as doubles for smooth motion */
 static uint16_t root_w, root_h;
@@ -282,7 +292,7 @@ static void draw_zzz(cairo_t *cr, int64_t now) {
 
 static void paint(void) {
     int64_t now = now_ms();
-    cairo_surface_t *s = cairo_xcb_surface_create(conn, win, visual, PET_W, PET_H);
+    cairo_surface_t *s = cairo_xcb_surface_create(conn, backbuffer, visual, PET_W, PET_H);
     cairo_t *cr = cairo_create(s);
 
     /* Clear. With ARGB this leaves true transparency; the opaque fallback
@@ -347,6 +357,7 @@ static void paint(void) {
 
     cairo_destroy(cr);
     cairo_surface_destroy(s);
+    xcb_copy_area(conn, backbuffer, win, backbuffer_gc, 0, 0, 0, 0, PET_W, PET_H);
     xcb_flush(conn);
 }
 
@@ -504,6 +515,11 @@ int main(void) {
     const char *cls = "nekos-pet\0nekos-pet";
     xcb_change_property(conn, XCB_PROP_MODE_REPLACE, win, XCB_ATOM_WM_CLASS,
                         XCB_ATOM_STRING, 8, 20, cls);
+
+    backbuffer = xcb_generate_id(conn);
+    xcb_create_pixmap(conn, depth, backbuffer, win, PET_W, PET_H);
+    backbuffer_gc = xcb_generate_id(conn);
+    xcb_create_gc(conn, backbuffer_gc, win, 0, NULL);
 
     xcb_map_window(conn, win);
     xcb_flush(conn);
