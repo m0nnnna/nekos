@@ -259,7 +259,7 @@ static void launch_selected(void) {
     if (pid == 0) {
         setsid();
         if (a->terminal)
-            execlp("xterm", "xterm", "-e", "sh", "-c", a->exec, (char *)NULL);
+            execlp("sakura", "sakura", "-e", "sh", "-c", a->exec, (char *)NULL);
         else
             execlp("sh", "sh", "-c", a->exec, (char *)NULL);
         _exit(127);

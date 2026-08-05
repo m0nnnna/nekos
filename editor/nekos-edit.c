@@ -23,7 +23,7 @@
  * selection owner on copy/cut and answer other apps' SelectionRequest events
  * from an internal buffer, and on paste we either read that buffer directly
  * (if we still own it) or ask whoever does via xcb_convert_selection and wait
- * for the SelectionNotify. This interops with Chromium/Firefox/xterm, not
+ * for the SelectionNotify. This interops with Chromium/Firefox/sakura, not
  * just within nekos-edit. Simplification: paste doesn't handle the INCR
  * protocol for huge (>~256KB) clipboard contents -- fine for ordinary text
  * snippets, which is all a clipboard usually carries.

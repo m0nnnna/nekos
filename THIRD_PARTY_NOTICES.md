@@ -22,7 +22,7 @@ time to recolor folders pink) is GPL-3.0 as well.
 
 ## Other provisioned software
 
-Everything else the installer provisions (Chromium, mpv, xterm, Flutter, the
+Everything else the installer provisions (Chromium, mpv, sakura, Flutter, the
 Void base system, etc.) is installed as unmodified upstream packages/binaries
 via `xbps` or upstream installers, not redistributed as part of this repo,
 and remains under each project's own license.
